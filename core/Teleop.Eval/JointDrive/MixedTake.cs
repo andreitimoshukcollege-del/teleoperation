@@ -325,6 +325,7 @@ namespace Teleop.Eval.JointDrive
         private readonly ArmCollisionModel[]? _walls; // the fixed objects' boxes at each of WallOffsets (null: no fixed object)
         private readonly List<Vector2> _avoid = new List<Vector2>();
         private BlindReach? _quietHigh; // the quiet windows' goals, none low: their fallback
+        private BlindReach? _tailReach; // the tail's goals after its exit: the quiet windows' without the low band
         private SeededRng _rng;
 
         /// <summary>Why object-directed moves were not planned, for a report: too low to meet, no line, no end at the offset, no start, the move there, the approach, a pass's sweep.</summary>
@@ -705,7 +706,10 @@ namespace Teleop.Eval.JointDrive
         {
             bool quiet = tailOnly || _hand.Free < _options.QuietStartSeconds;
             Vector3 from = _hand.TargetEnd;
-            BlindReach reach = quiet ? _options.QuietReach : _options.Reach;
+            // The tail after its exit keeps off the low band (docs/adr/0038 "M, motion"): the next take starts where this one ends, and a take
+            // that starts low sweeps the table in its quiet start, where a replay's add may then stand nothing (chained dry runs: 70% of groups
+            // with an add, against 86% from home).
+            BlindReach reach = tailOnly ? (_tailReach ??= _options.QuietReach.WithoutLow()) : quiet ? _options.QuietReach : _options.Reach;
             if (!_hand.MixedFree(_model, reach, Slowness(), _options.BlindTransportShare, _options.BlindReverseShare, out ScriptMoveKind kind, out start, out end, DrawWalls()))
             {
                 // The quiet start and end keep clear of every object: where low goals all come too near one, goals that are not low.
@@ -799,9 +803,9 @@ namespace Teleop.Eval.JointDrive
                 float r = new Vector2(c.X, c.Y).Length();
                 if (r - Footprint(o) >= 0.40f) continue;
                 targets.Add(i);
-                // Drawn by how much of its height the arm meets it over, so contacts spread over every height objects stand at (a tall rod as
-                // often as its height asks, a can less), not one height (docs/adr/0038 "M, motion").
-                weights.Add(MathF.Max(0.03f, zHi - zLo));
+                // Drawn by how much of its height the arm meets it over (to the power 1.5: low heights are where every object is), so contacts
+                // spread over every height objects stand at, not one height (docs/adr/0038 "M, motion").
+                weights.Add(MathF.Pow(MathF.Max(0.03f, zHi - zLo), 1.5f));
             }
 
             if (targets.Count == 0) return false;
@@ -862,7 +866,10 @@ namespace Teleop.Eval.JointDrive
             }
             else
             {
-                zLo = MathF.Max(floor, o.Min.Z + (Holders(oi).Count > 0 ? RaisedLowestMeters : LowestContactMeters));
+                // Raised: from just above what holds it up (a tilted object's box reaches below the stand's top it rests on).
+                float bottom = o.Min.Z;
+                foreach (int k in Holders(oi)) bottom = MathF.Max(bottom, _objects[k].Max.Z);
+                zLo = MathF.Max(floor, Holders(oi).Count > 0 ? bottom + RaisedLowestMeters : o.Min.Z + LowestContactMeters);
                 zHi = o.Max.Z - (o.Shape != null ? ObjectShape.TopMarginMeters + 0.003f : 0.004f);
             }
 

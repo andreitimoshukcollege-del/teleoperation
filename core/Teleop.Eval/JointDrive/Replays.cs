@@ -501,8 +501,17 @@ namespace Teleop.Eval.JointDrive
                 else far.Add(objects[i].Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
             }
 
-            own.Sort((a, b) => (touched.Contains(objects[b].Id) ? 1 : 0).CompareTo(touched.Contains(objects[a].Id) ? 1 : 0) is int c && c != 0 ? c : near.Gap(a).CompareTo(near.Gap(b)));
-            close.Sort((a, b) => near.Gap(a).CompareTo(near.Gap(b)));
+            // What the source moved first, then the nearest the path, then by index.
+            int Nearest(int a, int b)
+            {
+                int moved = touched.Contains(objects[b].Id).CompareTo(touched.Contains(objects[a].Id));
+                if (moved != 0) return moved;
+                int byGap = near.Gap(a).CompareTo(near.Gap(b));
+                return byGap != 0 ? byGap : a.CompareTo(b);
+            }
+
+            own.Sort(Nearest);
+            close.Sort(Nearest);
             // An object something stands on (a stand, a plank's support) is never edited: what it holds would fall. A raised one (on a stand)
             // is only removed: shifted off its stand, RobotHost would refuse it in the air.
             bool Free(int i) => !objects[i].Scenery && !Holds(objects, i);

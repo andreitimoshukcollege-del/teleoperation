@@ -163,8 +163,8 @@ def test_a_tiny_take_end_to_end(scenarios, geometry):  # noqa: F811
     cube = frame_rows(vis, "top", 34)  # a mesh with no geometry in the cache: visible counted, expected unknown
     assert all(r["visible_px"] == 0 and r["expected_px"] is None and r["in_frustum"] is None
                and "no geometry" in r["reason"] and r["role"] == "distractor" for r in cube)
-    lost = frame_rows(vis, "top", 35)  # 256 px of it in view, none in any mask: drawn without its label, not hidden
-    assert {r["expected_px"] for r in lost} == {256} and all(r["visible_px"] is None and math.isnan(r["visible_fraction"])
+    lost = frame_rows(vis, "top", 35)  # 16 x 17 px of it in view (its bottom edge reaches row 19), none in any mask: drawn without its label, not hidden
+    assert {r["expected_px"] for r in lost} == {272} and all(r["visible_px"] is None and math.isnan(r["visible_fraction"])
                                                              and "drawn without its label" in r["reason"] for r in lost)
 
 

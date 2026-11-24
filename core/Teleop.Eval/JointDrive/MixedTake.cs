@@ -1225,7 +1225,7 @@ namespace Teleop.Eval.JointDrive
                     // Where the approach starts: turned 12-25 degrees to a side, so every link sweeps round the base and what meets the object
                     // first is what stands at its radius and height; or, under a plank, lowered 8-14 degrees at the shoulder, up into it.
                     bool lift = o.Role == SceneRole.Plank; // a turn would keep a link under a bar across the reach
-                    float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f, turn = (float)((lift ? Draw.Uniform(ref _rng, 8, 14) : Draw.Uniform(ref _rng, 12, 25)) * deg);
+                    float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f, turn = (float)((lift ? Draw.Uniform(ref _rng, 15, 25) : Draw.Uniform(ref _rng, 12, 25)) * deg);
                     ArmPose start = target;
                     bool clear = false;
                     for (int t = 0; t < 2 && !clear; t++, side = -side)
@@ -1234,7 +1234,7 @@ namespace Teleop.Eval.JointDrive
                         start = lift ? DrivePlan.WithJoint(target, 1, target.Proximal + side * turn) : DrivePlan.WithJoint(target, 0, target.BaseYaw + side * turn);
                         if (!_envelope.Contains(start) || !ArmCollision.IsValid(_profile, holders, start)) continue;
                         arm.At(start, gripper);
-                        clear = arm.Gap(o, 0.02f) >= 0.015f;
+                        clear = arm.Gap(o, 0.02f) >= 0.01f;
                     }
 
                     if (!clear) { _linkWhy[2]++; continue; }

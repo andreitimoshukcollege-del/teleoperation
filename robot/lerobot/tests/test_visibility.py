@@ -110,7 +110,7 @@ def masks_take(root, objects=None, wrist_mask=True, ids=True, wo=None):
                   for c in ("top", "wrist") if c == "top" or wrist_mask})
     frames = [TOP, WRIST, SIDE]
     if ids:
-        frames.append(["ID", "7:arm;8:hand;10:table;131:object_31;133:object_33;134:object_34"])
+        frames.append(["ID", "7:arm;8:hand;10:table;131:object_31;133:object_33;134:object_34;135:object_35"])
     for n in range(0, 91):
         sensed = 500 * MS + round(n * 1e9 / 30)
         parts = []

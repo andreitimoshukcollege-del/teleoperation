@@ -398,7 +398,7 @@ namespace Teleop.Eval.JointDrive
             for (int k = 0; k < MixedOptions.AccidentKinds.Length; k++)
                 parts.Add(FormattableString.Invariant($"{ScriptMoveCodec.Name(MixedOptions.AccidentKinds[k])} {_accidentsMade[k]}/{_accidentsMade[k] + _accidentsDropped[k]}"));
             int[] r = _hand.AccidentRefusals;
-            return "accidents made of drawn: " + string.Join(", ", parts) + $" (their ticks refused: IK {r[0]}, envelope or model {r[1]}, jump {r[2]}, quiet margin {r[3]}, caps {r[4]})";
+            return "accidents made of drawn: " + string.Join(", ", parts) + $"; near objects {_nearMade} of {_nearTried} parts, tries {_nearTries}: unreachable {_nearUnreachable}, refused {_nearRefused} (their ticks refused: IK {r[0]}, envelope or model {r[1]}, jump {r[2]}, quiet margin {r[3]}, caps {r[4]})";
         }
 
         /// <summary>
@@ -781,6 +781,7 @@ namespace Teleop.Eval.JointDrive
         }
 
         private int _nextDraft;
+        private int _nearTried, _nearMade, _nearTries, _nearUnreachable, _nearRefused; // accidents placed near objects, for the report
 
         /// <summary>The arm's signed gap to object <paramref name="oi"/> at <paramref name="pose"/>: against its shape with the twin's links (the gripper as given), else its box with the model's.</summary>
         private float Gap(int oi, in ArmPose pose, float gripper)
@@ -955,9 +956,11 @@ namespace Teleop.Eval.JointDrive
                 targets.Add(i);
             }
 
+            _nearTried++;
             if (targets.Count == 0) return false;
-            for (int attempt = 0; attempt < 6; attempt++)
+            for (int attempt = 0; attempt < 16; attempt++)
             {
+                _nearTries++;
                 int oi = targets[(int)(_rng.NextDouble() * targets.Count) % targets.Count];
                 SafetyObject o = _objects[oi];
                 HeightRange(oi, out float zLo, out float zHi);
@@ -966,12 +969,25 @@ namespace Teleop.Eval.JointDrive
                 Vector3 tool = new Vector3(o.Center.X, o.Center.Y, (float)Draw.Uniform(ref _rng, zLo, zHi)) + dir * (Support(o, dir) + (float)Draw.Uniform(ref _rng, 0.01, 0.06));
                 float pitch = PitchAt(new Vector2(tool.X, tool.Y).Length(), tool.Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
                 Vector3 goal = WristFor(tool, pitch), from = _hand.TargetEnd;
-                if (!_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, _model, out double s, out double e, walls: DrawWalls(), accident: kind)) continue;
+                // Where the hand would stop must be in reach, in the envelope and clear of the robot itself, or no try there plans.
+                ArmPose last = _hand.Poses.Count > 0 ? _hand.Poses[_hand.Poses.Count - 1] : _model.Home;
+                if (!TrySolve(last, goal, pitch, out ArmPose there) || !_envelope.Contains(there) || !ArmCollision.IsValid(_profile, _model, there))
+                {
+                    _nearUnreachable++;
+                    continue;
+                }
+
+                if (!_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, _model, out double s, out double e, walls: DrawWalls(), accident: kind))
+                {
+                    _nearRefused++;
+                    continue;
+                }
                 double onset = _hand.AccidentOnset, recovered = _hand.AccidentEnd;
                 if (double.IsNaN(onset)) continue; // made without its accident (a try over the top): not this
                 int baseMove = Add(ScriptMoveKind.Free, -1, float.NaN, s, e, part: MovePart.NearAccident);
                 Add(kind, -1, float.NaN, onset, recovered, part: MovePart.NearAccident, overlies: baseMove);
                 Tally(kind, true);
+                _nearMade++;
                 // Into a movable object by the model, it may be anywhere afterwards: no later aim at it, and the tail's goals keep away.
                 bool pushed = false;
                 int k1 = Math.Min(_hand.Poses.Count - 1, (int)Math.Ceiling(recovered / HandModel.TickSeconds));

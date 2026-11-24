@@ -149,7 +149,7 @@ namespace Teleop.Eval.JointDrive
         public double AccidentShare { get; set; } = 0.12;
 
         /// <summary>
-        /// On top of <see cref="AccidentShare"/>, the share of the main part's parts that are a move to a point near an object (a few cm off
+        /// On top of <see cref="AccidentShare"/>, the share of the main part's would-be layout-blind parts that are a move to a point near an object (a few cm off
         /// its surface, at a height it stands over) with an accident in it (drawn from the accidents' own generator too; when none plans, a
         /// layout-blind part carries it): accidents placed near objects, so about a third of the contacts come from accidents (docs/adr/0038
         /// "M, motion"). Recorded as a <c>free</c> move with its accident.
@@ -576,10 +576,10 @@ namespace Teleop.Eval.JointDrive
                 bool done = false;
                 ScriptMoveKind? accident = DrawAccident(_options.AccidentShare);
                 bool objectTime = !first && _hand.Free >= _options.QuietStartSeconds - 0.9;
-                // Accidents placed near objects (on top of those drawn for every part): this part an aim or a pass with one.
-                bool near = objectTime && !accident.HasValue && (accident = DrawAccident(_options.AccidentNearShare)).HasValue;
-                if (near) done = TryNearAccident(accident!.Value);
-                else if (objectTime && Draw.Chance(ref _rng, _options.ObjectShare)) done = TryObjectMove(accident);
+                if (objectTime && Draw.Chance(ref _rng, _options.ObjectShare)) done = TryObjectMove(accident);
+                // Accidents placed near objects, on top of those drawn for every part: a part that would be layout-blind is, with this share, a
+                // move near an object with one (a layout-blind part carries it when none plans). The aims and passes stay as many.
+                if (!done && objectTime && !accident.HasValue && (accident = DrawAccident(_options.AccidentNearShare)).HasValue) done = TryNearAccident(accident.Value);
                 if (!done) done = TryBlindMove(first, accident: accident);
                 if (!done) done = Recentre(); // cornered (every part left the envelope or met the arm itself): back toward the middle
                 if (!done)

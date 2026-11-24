@@ -750,6 +750,81 @@ must now go at least 5 cm, which turned one of them into a removal). Seeds 1, 2 
   the aims near level at tall objects and planks against the caps and the watchdog; whether the stands' share of physics contacts falls as
   the model's did.
 
+**A replay's action is the commands it sent, whatever RobotHost refused (2026-11-24, branch `work/v2-motion4`).** World-models' review of
+`jetrover_20261124_021454_cb1e21`: most replay pairs matched, but episode 25 (group 530000007, `add:51`: the cleaner tin stood in the
+arm's way and was knocked over) differed from its source, episode 23, by 258 servo units at p95.
+
+- **Where the pair diverged,** stage by stage (`scripts/gpu/replay_pairs.py`, read-only):
+  - *Sent* (`JC`): every replay re-sent its source's commands exactly, 16135 of 16135 matched commands identical in the 19 pairs (7 UDP
+    datagrams lost), 814 of 814 in this one.
+  - *RobotHost:* its collision backstop refused 146 of the source's commands (a run of 145, 1.42-4.41 s into the take) and 32 of the
+    replay's (longest run 25, 1.45-1.94 s); the outcomes differ at 114 commands. Both runs began before the added tin mattered. The shaper
+    and the relay only follow what RobotHost passes on (`RO`).
+  - *The dataset:* the action was the newest `RO`, which RobotHost writes only for an accepted command, so a refused command left the one
+    before it in force: 258 units at p95.
+- **Why RobotHost refused.** Each take's feedback (`RI`) and commands (`JC`) run through RobotHost's own `GenericArmPlant` give all 32131
+  recorded outcomes of the dataset's 38 takes. Its 476 refusals (1.5%, in 33 takes) are all the servo-path check (docs/adr/0020, the 2026-11
+  bug hunt's C-05); the end pose was clear every time. 310 have a gripper finger within the model's 1 cm floor margin, the table top; 166 a
+  gripper, wrist or distal link within it of the robot's own body. The check samples the path every servo takes from where the arm is
+  *measured* to the command, and the arm trails its command by about 0.2 s, on the twin as on the real arm (workstream R). At the first
+  refusal of each of the 57 runs:
+  - the arm was 11.8 degrees from the command (p50; p90 23.2), about 220 ms behind it;
+  - the command was 1.6 degrees (p90 3.6) from the last accepted one, and 53 of the 57 were within 4 degrees of it, a step the check does
+    not sample when it is measured from the arm itself. Judged from the last accepted command, 2 of the 57 would have been refused.
+  - Refused, the arm finishes its last accepted command and holds there while the commands move on, and the path from it to them keeps
+    crossing the margin. Runs last p50 5 commands, p90 16, max 145 (3.0 s, episode 23).
+  - Whether a run starts, and how long it lasts, turns on the arm's measured pose to a fraction of a degree, that is on physics.
+- **The refusal is right: the real robot does the same.** The robot runs the same RobotHost, and its arm lags as much. Six real headset
+  sessions of 2026-10-25 and 27 predate the check and had no refusals. Replayed through today's plant, the four teleop sessions (24.5k
+  commands) get none, and the two course sessions (21.1k) get 422 (2.0%) in 123 runs, begun the same way: the arm 9.8 degrees behind (p50,
+  about 200 ms), the command 1.3 degrees from the last accepted one. So the refusals stay, as what the robot did. The backstop's own cost
+  is for docs/adr/0020 and the user, not changed here:
+  - in 18 of the 57 run starts (61 of the 123 real ones) the arm's path to the command it then holds crosses the model as well;
+  - a hold can last seconds and end in a jump: 3.0 s in episode 23, the arm about 25 degrees from the command that ended it;
+  - judged from the last accepted command, 55 of the 57 commands that began a run would have been taken (what followed would
+    differ).
+
+  Across all 641 twin takes on the GPU machine, 5146 commands (1.0%) were refused, in 263 takes; every twin dataset built before held its
+  action through them.
+- **The fix: the action is the command sent** (`takes.py` `_sent_actions`, begun in 735ab2f; docs/adr/0036 decision 3):
+  - every `RO`, and every refused command (`JC` `R`) turned into pulses as the plant would have, at the time it reached the plant. The
+    conversion is checked first against the take's own accepted commands and their `RO` (within 0.01 pulse), and pinned on both sides
+    (`RelayPulseContractTests`, `test_takes.py`).
+  - Not a command ignored while the arm parks (`P`). RobotHost parks the arm through the relay, so its own targets are the `RO` then, and
+    counting both (as 735ab2f did) alternated between them.
+  - The FR3 Duo the same way: its `AO`, and a refused command within the soft limits, as `SerialChainPlant` would have sent it.
+  - An episode spans the commands accepted or refused (it ended at the last accepted one), so a replay spans what its source does.
+  - `raw_ros_events.jsonl`'s actions, `capture_timing.jsonl`'s action time and `frames.parquet`'s action skew follow the same events. The
+    JetRover state's gripper slot stays its newest `RO`. A take with no refused command reads exactly as before.
+  - Replays send the tape unchanged, as before. joint-drive now says how much of it a replay sent (9392ab4), and RobotHost's refused-command
+    line prints at last (7421ecf): its throttle overflowed, and the batch behind this dataset logged none of its 476 refusals.
+
+The 19 pairs, per frame: the largest difference over the six motors between a replay's frame k and its source's, servo units. "Before" is
+the dataset's own action; "after" is `read_take` at 1dff8ed. replay_pairs.py's `relay` and `sent` columns give the same figures.
+
+| | Before | After |
+|---|---|---|
+| All 19 pairs (5029 frames): p50 / p95 / max, frames over 20 | 2 / 29 / 289, 8% | 2 / 26 / 183, 8% |
+| Episode 25 against 23 | 5 / 258 / 258, 25% | 3 / 31 / 105, 11% |
+| Other pairs whose refusals differed: the max | 289, 133, 132, 74, 68 (episodes 5, 4, 2, 36, 11) | 129, 67, 96, 45, 55 |
+| Without the frames' phase (the `tape` column) | | 0 / 14 / 66, 3% |
+
+What is left in most pairs (p95 12-38 units, episode 3 67) is the frames' phase and the send timing described above (episode 3 without
+the phase: p95 28); this change does not touch it.
+
+- **Checked:**
+  - `test_takes.py`: a refused command is the action; a replay with other refusals has its source's action; the conversion pinned by
+    hand; a stale command is not the action; while the arm parks the park is the action and the ignored commands are not; an episode runs
+    to the last refused command; the FR3 Duo's refused command, clamped; the raw events.
+  - `RelayPulseContractTests`: both plants' conversions are the vectors test_takes.py pins.
+  - `LogThrottleTests`; `ServoPathCollisionTests` (the same command refused or accepted by where the arm is measured).
+  - The dataset's 38 takes read with the new builder (10039 frames): every frame's action is the newest raw action event, and
+    capture_timing's action time is that event's (0 exceptions); 152 frames (1.5%) have another action than before, all while
+    RobotHost refused. replay_pairs.py run with the lerobot venv adds the dataset's own action column, equal to `relay` for this
+    dataset and to `sent` for one built since.
+- **Not run on the twin.** Untested there: RobotHost's refused-command line, joint-drive's replay line and a dataset built by the new
+  builder.
+
 ### C, clearance and contacts
 
 Built 2026-11-22 on `work/v2-contacts`. Checked offline against recorded takes; the table contacts are not yet run on the twin.

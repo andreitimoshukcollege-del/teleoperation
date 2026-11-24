@@ -1,6 +1,7 @@
 """How exactly each counterfactual replay repeats its source's commands, stage by stage (docs/adr/0038 decision 2), read-only.
 
     ssh andrei@10.188.58.133 'python3 - <dataset or take dir>...' < scripts/gpu/replay_pairs.py
+    ssh andrei@10.188.58.133 '~/isaacsim/lerobot-venv/bin/python - <dataset>' < scripts/gpu/replay_pairs.py   (adds `dataset`)
 
 A dataset (a folder with meta/teleop/takes.jsonl) stands for its takes, with their episode numbers. Takes are paired by their
 `RP` record: each replay with its group's source. Standard library only.
@@ -27,6 +28,8 @@ Per pair it compares, at each stage a command passes (trainer/contract/SESSION_F
     and last command accepted or refused: the dataset's `action` since 2026-11-24 (docs/adr/0038 "M, motion");
   - `tape`: the same, both read at the source's frame times counted from each take's first such command: what is left
     without the frames' own phase against the commands (the renderer's frame clock runs free).
+  - `dataset`: the dataset's own `action` column (with pyarrow, as the lerobot venv has it): equal to `sent` when the dataset
+    was built since 2026-11-24, to `relay` before.
 """
 import bisect
 import json
@@ -210,12 +213,30 @@ def runs_text(runs):
     return f"{len(runs)} run(s), longest {longest[1] - longest[0] + 1} commands ({longest[2]:.2f}-{longest[3]:.2f} s)"
 
 
+def dataset_actions(path):
+    """The dataset's own action per episode and frame, {episode: {frame: [values]}}, or None without pyarrow."""
+    try:
+        import glob
+        import pyarrow.parquet as pq
+    except ImportError:
+        return None
+    out = {}
+    for f in sorted(glob.glob(os.path.join(path, "data", "*", "*.parquet"))):
+        t = pq.read_table(f, columns=["episode_index", "frame_index", "action"]).to_pydict()
+        for e, k, a in zip(t["episode_index"], t["frame_index"], t["action"]):
+            out.setdefault(e, {})[k] = a
+    return out
+
+
 def main(args):
-    takes, episodes = [], {}
+    takes, episodes, actions = [], {}, {}
     for path in args:
         path = os.path.expanduser(path)
         listing = os.path.join(path, "meta", "teleop", "takes.jsonl")
         if os.path.exists(listing):
+            stored = dataset_actions(path)
+            if stored is not None:
+                actions.update(stored)
             for line in open(listing):
                 j = json.loads(line)
                 takes.append(j["take"])
@@ -231,13 +252,16 @@ def main(args):
     name = lambda t: (f"ep {episodes[t]} " if t in episodes else "") + os.path.basename(t)
     sources = {d["rp"][1]: t for t, d in data.items() if d["rp"] and d["rp"][2] == "source"}
     pairs = [(sources.get(d["rp"][1]), t) for t, d in data.items() if d["rp"] and d["rp"][2] == "replay"]
-    every = {"relay": [], "sent": [], "tape": []}
+    every = {"relay": [], "sent": [], "tape": [], "dataset": []}
     worst, totals = [], {"n": 0, "matched": 0, "identical": 0, "lost": 0}
     for s, r in pairs:
         if s is None:
             print(f"{name(r)}: group {data[r]['rp'][1]} has no source here")
             continue
         c = compare(data[s], data[r])
+        es, er = episodes.get(s), episodes.get(r)
+        c["dataset"] = ([max(abs(x - y) for x, y in zip(actions[es][k], actions[er][k])) for k in sorted(actions[er]) if k in actions[es]]
+                        if es in actions and er in actions else [])
         for k in every:
             every[k] += c[k]
         totals["n"] += c["n"][1]
@@ -251,13 +275,16 @@ def main(args):
         print(f"  outcome: source {c['outcome'][0]}, refused {runs_text(data[s]['runs'])}; replay {c['outcome'][1]}, refused {runs_text(data[r]['runs'])};"
               f" outcomes differ at {c['differ']} matched commands")
         print(f"  action per frame ({c['frames'][0]} / {c['frames'][1]} frames), units p50 / p95 / max: relay {summary(c['relay'])};"
-              f" sent {summary(c['sent'])}; tape {summary(c['tape'])}")
+              f" sent {summary(c['sent'])}; tape {summary(c['tape'])}"
+              + (f"; dataset {summary(c['dataset'])}" if c["dataset"] else ""))
     print()
     print(f"{len(pairs)} replay pairs: {totals['identical']} of {totals['matched']} matched commands identical, {totals['lost']} lost;"
           f" {sum(len(every['relay']) for _ in [0])} paired frames")
     print(f"  action per frame, relay (RO: the dataset's until 2026-11-24): {summary(every['relay'])}")
     print(f"  action per frame, sent (since 2026-11-24):                    {summary(every['sent'])}")
     print(f"  the same at the source's frame times (no frame phase):        {summary(every['tape'])}")
+    if every["dataset"]:
+        print(f"  the dataset's own action column:                             {summary(every['dataset'])}")
     print("  pairs by p95, relay / sent: " + ", ".join(f"{n} {p:.0f}/{q:.0f}" for p, q, n in sorted(worst, reverse=True)))
     refusing = [(sum(1 for _, _, o, _ in d["jc"] if o == "R"), len(d["jc"]), name(t)) for t, d in data.items()]
     total_r, total_n = sum(r for r, _, _ in refusing), sum(n for _, n, _ in refusing)

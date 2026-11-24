@@ -480,18 +480,6 @@ namespace Teleop.RobotHost.Recording
                 bool none = spec.Uplink.Profile == "none" || spec.Uplink.Profile == "lan";
                 network["uplinkProfile"] = none ? "lan" : spec.Uplink.Profile;
                 network["uplinkSeed"] = none ? 0UL : spec.Uplink.Seed;
-                // A stall: profile's settings, spelled out for the dataset (docs/adr/0038 N); the name carries them too.
-                if (Net.StallSettings.TryParse(spec.Uplink.Profile, out Net.StallSettings stall, out _))
-                {
-                    network["uplinkStall"] = new JsonObject
-                    {
-                        ["baseMs"] = stall.BaseMs,
-                        ["jitterMs"] = stall.JitterMs,
-                        ["meanGapS"] = stall.MeanGapSeconds,
-                        ["minStallMs"] = stall.MinStallMs,
-                        ["maxStallMs"] = stall.MaxStallMs,
-                    };
-                }
             }
 
             // The headset's own added delay and disturbances are not known here (docs/adr/0023).

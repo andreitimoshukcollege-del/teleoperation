@@ -196,28 +196,6 @@ namespace Teleop.RobotHost.Tests.Recording
         }
 
         [Fact]
-        public void AStallUplink_SpellsOutItsSettingsInSessionJson()
-        {
-            // docs/adr/0038 N: the dataset copies a take's network from session.json (and its UP record) without parsing names.
-            using var rig = new Rig(driverWaitSeconds: 0);
-            int id = rig.Begin(uplink: new UplinkCondition("stall:85:20:4:200:500", 9));
-            rig.Recorder.Record("UP|1|stall:85:20:4:200:500|9");
-            rig.Recorder.EndAuto(id, "no joint command for 30 s");
-
-            string dir = rig.AutoDir();
-            Assert.True(WaitFor(() => File.Exists(Path.Combine(dir, "files.sha256"))), string.Join("\n", rig.Log));
-            JsonNode network = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "session.json")))!["conditions"]!["network"]!;
-            Assert.Equal("stall:85:20:4:200:500", (string)network["uplinkProfile"]!);
-            Assert.Equal(9UL, (ulong)network["uplinkSeed"]!);
-            JsonNode stall = network["uplinkStall"]!;
-            Assert.Equal(85.0, (double)stall["baseMs"]!);
-            Assert.Equal(20.0, (double)stall["jitterMs"]!);
-            Assert.Equal(4.0, (double)stall["meanGapS"]!);
-            Assert.Equal(200.0, (double)stall["minStallMs"]!);
-            Assert.Equal(500.0, (double)stall["maxStallMs"]!);
-        }
-
-        [Fact]
         public void AHostWithoutADriver_IsNotToldItsDriverLogIsMissing()
         {
             using var rig = new Rig(driverWaitSeconds: 0); // the serial-chain hosts: no driver, so no wait

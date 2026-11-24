@@ -46,7 +46,7 @@ namespace Teleop.Eval.Tests.JointDrive
                     ScriptMove record = m.Record(m.Start, plan.Moves.Count);
                     Assert.Equal(m.Kind, record.Kind);
                     Assert.Equal(0f, record.StartSeconds);
-                    if (m.ObjectId != 0) onObjects++;
+                    if (m.ObjectId != 0 || m.Part == MovePart.NearAccident) onObjects++; // on an aim or a pass, or placed near an object
                     // In free space: no object (scenery aside) within 5 cm of the arm's model over the whole accident.
                     ArmCollisionModel near = SafetyScript.WithObjects(Model, objects.Where(o => !o.Scenery).ToArray(), 0.05f);
                     bool clear = true;
@@ -79,7 +79,7 @@ namespace Teleop.Eval.Tests.JointDrive
                 }
             }
 
-            string report = $"{planned} planned, {accidents} accidents ({string.Join(", ", kinds.Select(kv => $"{ScriptMoveCodec.Name(kv.Key)} {kv.Value}"))}); {onObjects} on aims or passes, {free} in free space; {fastTicks} joint-ticks faster than people's caps";
+            string report = $"{planned} planned, {accidents} accidents ({string.Join(", ", kinds.Select(kv => $"{ScriptMoveCodec.Name(kv.Key)} {kv.Value}"))}); {onObjects} on aims or passes or placed near objects, {free} in free space; {fastTicks} joint-ticks faster than people's caps";
             _output.WriteLine(report);
             Assert.True(planned >= 14, report);
             Assert.True(accidents >= planned, report); // about two a take by default

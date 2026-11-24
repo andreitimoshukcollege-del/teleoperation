@@ -1242,10 +1242,11 @@ namespace Teleop.Eval.JointDrive
                 {
                     commanded = s.Pose;
                     int count = Targets(c.Profile, s.Pose, s.Gripper, s.Speed, targets);
-                    if (JointCommandCodec.TryEncode(sequence, now, targets.AsSpan(0, count), datagram, out int written))
+                    long stamp = player.Stamp(now); // strictly newer than the last, or RobotHost drops it as stale
+                    if (JointCommandCodec.TryEncode(sequence, stamp, targets.AsSpan(0, count), datagram, out int written))
                     {
                         c.Socket.SendTo(datagram, 0, written, SocketFlags.None, c.Robot);
-                        c.Log?.Command(now, sequence, now, targets.AsSpan(0, count));
+                        c.Log?.Command(now, sequence, stamp, targets.AsSpan(0, count));
                         sequence++;
                     }
                 }

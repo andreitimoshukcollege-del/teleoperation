@@ -56,6 +56,17 @@ namespace Teleop.Eval.Tests.JointDrive
             }
 
             Assert.Equal(tape.Count, sent.Count);
+            // Every command's capture stamp newer than the one before, even those sent in one pass (RobotHost drops a stamp not newer as stale).
+            var stamps = new TapePlayer(tape);
+            long last = long.MinValue;
+            foreach (long now in new long[] { 100, 100, 100, 101, 250, 250, 240, 400 })
+            {
+                long s = stamps.Stamp(now);
+                Assert.True(s > last && s >= Math.Min(now, last + 1), $"stamp {s} after {last} at {now}");
+                last = s;
+            }
+
+            Assert.Equal(400, last);
             var targets = new JointTarget[Profile.JointCount];
             var again = new JointTarget[Profile.JointCount];
             for (int i = 0; i < tape.Count; i++)

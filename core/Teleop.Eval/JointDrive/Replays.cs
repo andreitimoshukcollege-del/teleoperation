@@ -52,6 +52,20 @@ namespace Teleop.Eval.JointDrive
             command = _tape[_next++];
             return true;
         }
+
+        private long _stamp = long.MinValue;
+
+        /// <summary>
+        /// The capture stamp for a command sent at sender ticks <paramref name="now"/>: <paramref name="now"/>, or one tick past the last stamp
+        /// when that is not earlier. RobotHost refuses a command whose stamp is not newer than the last it accepted (stale), and behind its
+        /// clock the replay sends the commands due one after another in one pass of its loop: stamped alike, all but the first were dropped
+        /// (docs/adr/0038 "M, motion": 4-19 commands a replay on the twin, none in their sources).
+        /// </summary>
+        public long Stamp(long now)
+        {
+            _stamp = _stamp == long.MinValue || now > _stamp ? now : _stamp + 1;
+            return _stamp;
+        }
     }
 
     /// <summary>A point of the arm's way through a take: seconds from its start, the pose, and the gripper fraction commanded.</summary>

@@ -1568,3 +1568,44 @@ puck (cylinders).
   - **Masks and depth unchanged:** `appearance_check.py` still has every camera's table depth through `CM` under 3 mm.
   - **The renderer's log:** `[render] textures at their real size: N boxes and M surfaces as meshes with coordinates in
     metres`, and no warning.
+
+**Masks: every drawn object keeps its own mask id (2026-11-24, branch `work/v2-masks5`).** The visibility workstream found
+objects drawn in rgb whose pixels carried mask id 0 for whole takes: twin0 lost 11 of its last 13 `mixed` takes from take092
+on, twin1 5, and the held-out scene every object but the drill (125) in most takes. Read from the takes (each object's
+pixels in every mask camera against where `OL` and `WO` put it, replays' `RP` removals set aside), the pattern is one rule:
+**an object that came onto the table was unlabelled from then on, and one that stayed on the table kept its label.** The
+renderer hid a parked object (`MakeInvisible` on the object's Xform, which carried the label its shapes inherited) and drew
+it again when it was unparked, and it measured the render lag at start-up with every object hidden. Isaac 6.2's
+segmentation (its semantic structure, which tracks labels, instances and prim counts frame to frame) then gave the shapes
+back with no label, Isaac's UNLABELLED, which `stable_mask` writes as 0, until something rebuilt its tables (a later change
+sometimes did: twin1 recovered at change 3, twin0's pen at change 4). The age of the twin is not the cause (the held-out run
+lost its objects from its first take), and nor are resizes, looks or `metric_box` (a box turned into a mesh keeps its label;
+scanned meshes lost theirs the same way). The fix, in `robot/isaac/teleop_isaac/renderer.py`:
+- **No object is hidden and drawn again.** A parked object is left drawn on the shelf when no camera can see that far
+  (`out_of_sight`: farther than every camera's far plane plus 0.5 m, or 2 m for a camera on the arm). The shelf is 14 m or
+  more away, and the far planes are 6 m on the JetRover and 10 m on the FR3. A parked object is hidden only when a camera
+  might see it, and is relabelled when shown again. A test holds every shipped scene's shelf slots out of sight. The lag is
+  now measured with the objects moved a kilometre down. Nothing seen changes: the shelf was already beyond every far plane.
+- **Each object's shapes carry its label themselves** (`label_object`), not its Xform: every `Gprim` under the object, a
+  scanned asset's meshes, a textured box after it became a mesh, or an instanced asset's instance. A joined label
+  (`object_37,object_37`, or an asset's own label beside the object's) still names its object (`mask_label_id`).
+- **A check at each take's start**, and after an unpark or a resize once the render lag has passed. Over 6 recorded frames,
+  each object on the table must have pixels of its id in some mask if a still camera sees its centre with nothing nearer
+  in its depth there. An object with none is logged (`[render] warning: mask check ...`), recorded (`ML`,
+  `trainer/contract/SESSION_FORMAT.md`) and relabelled once a take (its label cleared and set again two frames later, so
+  Isaac resolves it afresh), then checked again. The check also reports, for each camera, how many pixels a frame were
+  drawn with no id. At a take's start the stage's labels are also compared with what was authored, and any that are gone
+  are put back. Cost: about 0.4 ms a mask camera on the check's frames (measured on the GPU machine's CPU), about 7 ms a
+  take, and nothing on other frames.
+- **Tests:** `robot/isaac/tests/test_masks.py` covers the joined labels, the unlabelled pixels, the shelf out of every
+  scene's sight, the projection and the depth test, the check's window and the renderer's wiring. With pxr (Isaac's
+  Python), it checks the labels on each object's shapes through a box turned into a mesh, a resize, a visibility toggle and
+  a relabel, and on a scanned asset's meshes and an instanced one.
+- **Not yet run on a twin.** What the twin check should show:
+  - each take's `isaac.jlog` has `ML` records with an empty `missing` field;
+  - `renderer.log` has `[render] mask labels: N shapes of M objects labelled themselves` at start-up, a
+    `[render] mask check (take, <take>): ... every one in the masks` line for each take, no `mask check` warning and no
+    `relabelled` line;
+  - a per-take scan finds every object on the table with pixels of its id in some camera, the held-out scene's ids
+    202-229 included.
+  A `mask check` warning that names the same object again after its relabel would mean hiding is not the only cause.

@@ -1195,13 +1195,22 @@ namespace Teleop.Eval.JointDrive
                     (ArmPose target, ArmLink link) = candidates[pick];
                     candidates.RemoveAt(pick);
                     if (!_envelope.Contains(target) || !ArmCollision.IsValid(_profile, holders, target)) continue;
-                    // Met first by a link that is not the pads, on the way there from where the hand is.
+                    // Where the approach starts: turned 12-25 degrees to a side, so every link sweeps round the base and what meets the object
+                    // first is what stands at its radius and height; or, under a plank, lowered 8-14 degrees at the shoulder, up into it.
+                    bool lift = o.Role == SceneRole.Plank && point.Z <= o.Min.Z + 1e-4f;
+                    float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
+                    ArmPose start = lift
+                        ? DrivePlan.WithJoint(target, 1, target.Proximal + side * (float)(Draw.Uniform(ref _rng, 8, 14) * deg))
+                        : DrivePlan.WithJoint(target, 0, target.BaseYaw + side * (float)(Draw.Uniform(ref _rng, 12, 25) * deg));
+                    if (!_envelope.Contains(start) || !ArmCollision.IsValid(_profile, holders, start)) continue;
+                    arm.At(start, gripper);
+                    if (arm.Gap(o, 0.02f) < 0.015f) continue;
+                    // Met first by a link that is not the pads, on the way from there.
                     float met = float.NaN;
                     ArmLink first = ArmLink.Gripper;
                     for (float l = 0f; l <= 1.0001f; l += 0.02f)
                     {
-                        ArmPose q = ArmPose.Lerp(last, target, l);
-                        arm.At(q, gripper);
+                        arm.At(ArmPose.Lerp(start, target, l), gripper);
                         if (!arm.Touching(o, out ArmLink by, out _)) continue;
                         met = l;
                         first = by;
@@ -1212,14 +1221,12 @@ namespace Teleop.Eval.JointDrive
                     // The stop: a signed offset along that way as the model measures it (into it no deeper than it measures).
                     float offset = (float)Draw.Uniform(ref _rng, -0.015, 0.04);
                     offset = MathF.Max(offset, -(DeepestGap(oi) - 0.002f));
-                    float stop = met;
-                    ArmPose goalPose = ArmPose.Lerp(last, target, met);
+                    ArmPose goalPose = ArmPose.Lerp(start, target, met);
                     if (offset >= 0f)
                     {
                         for (float l = met; l >= 0f; l -= 0.01f)
                         {
-                            goalPose = ArmPose.Lerp(last, target, l);
-                            stop = l;
+                            goalPose = ArmPose.Lerp(start, target, l);
                             if (Gap(oi, goalPose, gripper) >= offset) break;
                         }
                     }
@@ -1227,20 +1234,27 @@ namespace Teleop.Eval.JointDrive
                     {
                         for (float l = met; l <= 1.3f; l += 0.01f)
                         {
-                            ArmPose q = ArmPose.Lerp(last, target, l);
+                            ArmPose q = ArmPose.Lerp(start, target, l);
                             if (!_envelope.Contains(q)) break;
                             goalPose = q;
-                            stop = l;
                             if (Gap(oi, q, gripper) <= offset) break;
                         }
                     }
 
                     if (!_envelope.Contains(goalPose) || !ArmCollision.IsValid(_profile, holders, goalPose)) continue;
-                    Vector3 goal = HandModel.Wrist(_profile, goalPose), from = _hand.TargetEnd;
-                    float goalPitch = HandModel.PitchOf(goalPose);
+                    Vector3 startWrist = HandModel.Wrist(_profile, start), goal = HandModel.Wrist(_profile, goalPose);
+                    float startPitch = HandModel.PitchOf(start), goalPitch = HandModel.PitchOf(goalPose);
                     HandSnapshot before = _hand.Save();
                     int drafts = _drafts.Count;
-                    double s = 0, e = 0;
+                    // To where it starts, clear of the object by 1 cm and of what holds it up, blind to the others (as an aim's staging is).
+                    ArmCollisionModel staging = SafetyScript.WithObjects(holders, new[] { o.Grown(0.01f) }, 0f);
+                    if (!_hand.MixedTo(startWrist, startPitch, null, Slowness(), HandModel.Tolerance, staging, out double s, out double e, overTheTop: true))
+                    {
+                        Undo(before, drafts);
+                        continue;
+                    }
+
+                    Add(ScriptMoveKind.Free, -1, float.NaN, s, e, part: MovePart.Staging);
                     bool withAccident = accident.HasValue && _hand.MixedTo(goal, goalPitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e, accident: accident);
                     double onset = _hand.AccidentOnset, recovered = _hand.AccidentEnd;
                     if (!withAccident && !_hand.MixedTo(goal, goalPitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e))
@@ -1250,7 +1264,7 @@ namespace Teleop.Eval.JointDrive
                     }
 
                     _objectMoves++;
-                    Vector3 u = goal - from;
+                    Vector3 u = goal - startWrist;
                     u = u.Length() > 1e-6f ? Vector3.Normalize(u) : Vector3.UnitX;
                     int baseMove = Add(ScriptMoveKind.Aim, oi, offset, s, e, float.NaN, MovePart.Approach);
                     if (withAccident) Add(accident!.Value, oi, offset, onset, recovered, float.NaN, MovePart.Approach, baseMove);

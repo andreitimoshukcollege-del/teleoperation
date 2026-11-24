@@ -636,6 +636,119 @@ says it is free.
 - **Not run on the twin.** Untested there: unpark against Isaac's placement rules; the measured track joint-drive gives the add; the
   physics contacts the low blind goals now make with movable objects; the motion's look.
 
+**Contacts at every height, and replays that edit the path (2026-11-23, branch `work/v2-motion3`).** World-models' review of the pilot
+dataset `jetrover_20261123_215338_c00c5a` (16 episodes, 41 contacts): at contact the tool point sat a median 14.5 cm below the base
+frame (80% from -15.8 to -8.4 cm), no rod, shelf or plank was hit, the stands under raised objects took 18 contacts, and how low the path
+goes scored AP 0.37 alone (chance 0.14); in one replay group a removal and a move left the take's one stand contact as it was. Where they
+differ, these replace the description above.
+
+- **Aims and passes** (`MixedTake`):
+  - never at a stand or a plank's support: `SafetyObject.Role` carries the scene's role (`WorldView.Bounds`; the four old scripts do not
+    read it);
+  - at a height drawn uniformly over the object's own height (`HeightRange`): on the table from 26 mm above its bottom, raised on a stand
+    from 10 mm above the stand's top, a plank from 3 cm under it (met from below) to its top; up to just below the top and to what the
+    arm reaches (`ReachTop`, at most 29.6 cm above the table);
+  - targets drawn in proportion to that height range to the power 1.5 (at least 3 cm): every object covers the low heights, only tall ones
+    the high;
+  - the wrist pitched for the height (`PitchAt`): the reach shell's pitch near the table (pointing down close in), toward level higher up
+    (-35 degrees 10 cm above the table, -20 at 20 cm, -10 at 30 cm, blended from 5 to 15 cm up), so the pads lead into a tall object
+    rather than the wrist above them. A plank's approach may rise up to 20 degrees, and a pass goes under a plank anywhere across it;
+  - an approach to a raised object or a plank keeps 5 mm off what holds it up (the line from start to end, the move there and the move
+    itself, by the model), or the aim is dropped;
+  - a thin object's offsets short of it shrink with its depth (a plank: -8.5 to +15 mm, against -40 to +60 for a deep one), so it is
+    touched as often as a thick one: before, 4 of 62 aims at planks touched them;
+  - an aim's start pitch is a blind goal's for a height drawn from the blind bands (below), so aims turn the wrist on the way as free moves
+    do.
+- **Layout-blind goals** by the tool point's height (`BlindReach.ToolBands`, `--tool-bands`): base frame z -18 to -12 cm (60%), -12 to
+  -7 (28%), -7 to +2 (12%), the table at -19.6, the wrist pitched by the same `PitchAt`. The quiet start the same, falling back to the
+  bands without the low one; the tail after its exit without the low band, so the next take, which starts where this one ends, does not
+  start by the table. Chosen from four settings so that where blind moves end follows where aims end: they still end about 2 cm higher at
+  the median (low goals are refused more often by the floor and the caps).
+- **Replays** (`ReplayEdits.Draw`): on the source's track (measured when joint-drive has it), the model sorts the objects
+  (`PathProximity`, `ArmTouch`: the twin's links against each object's shape, else its box): touched or within 1 cm (or moved by the
+  source), within 5 cm, farther.
+  - The first are removed, shifted away until the track keeps 5 mm from them, or moved elsewhere 2 cm clear of it: a contact made a miss.
+  - The second are shifted toward the path until the track goes 3 mm in, or moved onto it, under the arm's lowest point as an add stands one:
+    a miss made a contact.
+  - Nothing farther is edited: a replay with nothing else is skipped, and its log line lists the touched, near and far objects.
+  - The add comes at its drawn replay, or at the first when that one has nothing near the path (before, such a group lost its add
+    altogether: replay 1 found nothing and the rest were skipped), or at the second when the first found no spot; one add a group. Why an
+    add found no spot is logged (no moment, no object, or the spots' tally: too high, beyond the bearing, the scene's rules, the quiet start
+    and end). joint-drive prints the source's nearness to every object before its replays.
+  - `Holds` takes a tilted object's box reaching below what it rests on: its bottom within 1.5 cm above or 3 cm below the stand's top. On the
+    twin check an elephant lying on a stand read 1.5 cm low, the stand was taken for free and removed, and the layout could not be put back
+    for the group's second replay.
+  - Every replayed command's capture stamp is newer than the last (`TapePlayer.Stamp`). Behind its clock the replay sent the commands due in
+    one pass with one stamp, and RobotHost dropped all but the first as stale: 4-19 commands in each of the 9 replays of the pilot, none in
+    their sources.
+- **The dry run** makes a mixed pool's distractors scenery, as `WorldView.TryObjects` does on the twin, and prints where contacts fall
+  (planned, and by the model over every move with the move that made each), where moves end, aims by object kind, each replay edit's expected
+  change and why groups lack an add. `--chain` plans each layout from where the last plan left the arm, as the twin's takes start; `--lag s`
+  has the add look at the commanded way s late, as at a measured track.
+
+On `jetrover-mixed`, layouts 1-200, the dry run as above. "Before" is 6fb0c7b's planner and edits, measured by b3f4403's dry run (which
+only adds the figures, and makes distractors scenery as on the twin: the add share it reports is lower than the 89% above, which counted
+moves of distractors and which the bug below hid less); "after" is 30cd829. Seeds 1, 2 and 3 where three figures are given.
+
+| | Before | After |
+|---|---|---|
+| Layouts planned | 196, 198, 198 of 200 | 199, 198, 197 of 200 |
+| Aims / passes a take | 1.2 / 0.2 | 0.9 / 0.1 |
+| Planned contacts (aims and passes, by the model) | 131 in 79 takes | 94 in 76 takes |
+| Their tool point, cm from the base frame, p10 / p50 / p90 | -15.5 / -11.7 / -3.0 | -15.6 / -10.6 / -0.6 |
+| Their tool point above -8 cm | 23%, 30%, 25% | 34%, 34%, 40% |
+| Planned contacts by kind | support 25%, other 23%, stand 22%, rod 20%, raised 10% | other 38%, rod 37%, raised 14%, plank 11% |
+| Contacts by the model over every move (onsets) | 370 in 97 takes | 317 in 103 takes |
+| Their tool point, p10 / p50 / p90; above -8 cm | -15.5 / -10.5 / -3.2; 27% | -15.2 / -10.3 / -1.1; 33% (39%, 38%) |
+| By kind | other 24%, plank 21%, rod 19%, support 15%, raised 11%, stand 10% | other 43%, rod 24%, raised 17%, plank 11%, support 3%, stand 2% |
+| By move | aimed 31%, staging 25%, blind 20%, aimed elsewhere 14% | blind 44%, aimed 27%, staging 13% |
+| Where moves end, tool point p50: aims / blind goals | -10.8 / -10.3 cm | -11.3 / -7.9 cm |
+| Aim against free, main part, logistic AUC | 0.632, 0.626, 0.682 | 0.632, 0.610, 0.608 |
+| The same, whole take | 0.689 | 0.684 |
+| With the extras (main part) | 0.728, 0.724, 0.759 | 0.754, 0.742, 0.742 |
+| Aims' offsets mm, p50 / p90 | 13 / 48 | 5 / 28 |
+| Largest arm-joint step a frame, p50 / p90 / p95 / p99 | 0.035 / 0.113 / 0.139 / 0.183 rad | 0.033 / 0.106 / 0.133 / 0.177 rad |
+| The command moving | 85% of frames | 85% |
+| Groups with an add, from home / chained (`--chain --lag 0.2`) | 152 of 196 (78%) / 141 of 189 (75%) | 171 of 199 (86%) / 151 of 196 (77%) |
+| Non-add edits the model expects to change the edited object's contact | 67 of 162 (41%) | 112 of 127 (88%) |
+| The same, of objects touched or within 1 cm / of the others | 63 of 106 (59%) / 4 of 56 (7%) | 105 of 120 (88%) / 7 of 7 |
+| Non-add edits that change whether the take touches anything | 32 of 162 (20%) | 77 of 127 (61%) |
+
+- **What the edits do now.** Every remove, shift and move of an object the model has the arm touch changes that contact; so does every
+  shift or move of a near one. The 15 that do not are of objects within 1 cm that the model has the arm miss: the rule treats them as
+  touched, as the brief asks, since physics may. No edit is of an object farther than 5 cm. 84 of 199 groups had fewer than two edits:
+  nothing more was near the path.
+- **Why groups lack an add,** from home: the spots under the arm met the quiet start or end (29 groups), or the arm passed too high for
+  the parked objects (8). Chained, the quiet start meets more spots (50 groups), since a take starts where the last one ended; with the
+  tail kept off the low band that fell from 65 to 50 (the add share chained from 70% to 77%).
+- **The twin's adds** (3 of 6 groups in one batch, 5 of 7 in the pilot's): the logs show three causes, none of them the measured track (an
+  add looking at the commanded way 0.2 s late finds as many spots as at the commanded one). (1) A group whose drawn add replay was the
+  second, and whose first replay had nothing else to edit, skipped both: the pilot's group 400600003 (no object in reach). Fixed: the add
+  then comes first. (2) Group 400400006 removed a stand (75) that held a lying elephant its rule did not see, and the layout could not be
+  put back for the add. Fixed in `Holds`. (3) The start pose: chained takes start where the last one ended, low, and their quiet start
+  sweeps the table there (above). The add's other failures are real: the spots meet the quiet windows.
+- **Contacts and height.** At least a third of the planned contacts' tool points are above -8 cm on every seed, and of all contacts by the
+  model on two of three (33%, 39%, 38%; chained, 29%): blind moves into low objects keep the share near a third. Stands and supports took
+  5-7% of the contacts by the model (before 25%), no planned one. The planned contacts fell from 131 to 94 because the 62 aims at stands
+  and supports are gone; the thin objects' offsets made up some of it.
+- **Checked:** `MixedTakeTests` (on jetrover-mixed: no aim at a stand or a support, aims at raised objects keep off their stands, a quarter
+  of the planned contacts above -8 cm; blind goals at every height; the bands are checked; blind goals ending low and high on the bench);
+  `ReplaysTests` (every edit changes the model's contact for the edited object or is of an object within 1 cm, none farther than 5 cm; a
+  group with nothing near its path gets its add at the first replay, and one add a group; a tilted object on a stand is held; each
+  replayed command's stamp is newer than the last; the proximity measures the twin's links). The four old scripts' tests are unchanged.
+- **Replay timing (measured, not changed but for the stale stamps):** on the pilot's 9 pairs, read only. Aligned by their targets, a
+  replay's commands reach RobotHost +5 to +13 ms after their source's at the median (sd 4-9 ms, p95 +13 to +23 ms). Most of it is the
+  sender: joint-drive's loop on Windows wakes on its 15.6 ms timer (the source's commands are 15.3 ms apart at the median, 30.6 at p95),
+  and its send times differ by sd 4-7 ms; the VPN adds sd 2-4 ms. The renderer's frame clock runs free: a replay's first frame falls -76
+  to +47 ms off its source's against the first command. So a replay's frame N samples the commands at another moment than its source's
+  frame N: the newest relay target differs in 89-100% of pre-contact frames (p95 17-44 servo units), and in 29-48% even with the frames
+  moved to the source's phase. Making pairs exact needs both the commands (joint-drive on the GPU machine, or a high-resolution timer) and
+  the frames (lockstep, or the dataset taking each frame's action from the tape at the frame's own time and reporting each episode's frame
+  phase); not done.
+- **Not run on the twin.** Untested there: the edits as the measured track places them; physics against the model's expected changes;
+  the aims near level at tall objects and planks against the caps and the watchdog; whether the stands' share of physics contacts falls as
+  the model's did.
+
 ### C, clearance and contacts
 
 Built 2026-11-22 on `work/v2-contacts`. Checked offline against recorded takes; the table contacts are not yet run on the twin.

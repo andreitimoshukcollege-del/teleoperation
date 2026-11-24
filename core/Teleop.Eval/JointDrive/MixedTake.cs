@@ -1169,8 +1169,10 @@ namespace Teleop.Eval.JointDrive
                 point.Z = z;
                 float r = new Vector2(point.X, point.Y).Length();
                 if (r < 0.06f || r > 0.42f) continue;
+                // Which link, by what can stand there: the arm's two links are 13 cm each from a shoulder 3.5 cm above the base frame, so the
+                // upper arm meets only what is within about 15 cm of the base's axis, the forearm's middle what is within about 25 cm.
                 double w = _rng.NextDouble();
-                ArmLink want = w < 0.4 ? ArmLink.Distal : w < 0.7 ? ArmLink.Wrist : ArmLink.Proximal;
+                ArmLink want = r <= 0.15f && w < 0.4 ? ArmLink.Proximal : r <= 0.25f && w < 0.75 ? ArmLink.Distal : ArmLink.Wrist;
                 float yaw = MathF.Atan2(point.Y, point.X) + (float)(Draw.Uniform(ref _rng, -4, 4) * deg);
                 AngleRange ry = _envelope[0], rp = _envelope[1], rd = _envelope[2], rw = _envelope[3];
                 if (yaw < ry.Min || yaw > ry.Max) continue;
@@ -1187,7 +1189,7 @@ namespace Teleop.Eval.JointDrive
                     Vector3 a = frames[li].Origin, b = li + 1 < 5 ? frames[li + 1].Origin : frames[li].ToBase(ToolInGripper);
                     float d = SegmentDistance(point, a, b, out float along);
                     // Along the link's middle, not by the joint at its far end (there the next link meets it first).
-                    if (d < 0.012f || d > 0.04f || along < 0.15f || along > 0.75f) continue;
+                    if (d < 0.012f || d > 0.04f || along < 0.1f || along > 0.9f) continue;
                     candidates.Add((pose, want));
                 }
 

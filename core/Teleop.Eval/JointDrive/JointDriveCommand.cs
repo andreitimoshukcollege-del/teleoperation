@@ -84,7 +84,8 @@ namespace Teleop.Eval.JointDrive
             "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style | --style p,r,t,s] [--blind n,r,v,l[,q,h]] [--pause s,min,max] [--pullback s] [--pass-share s] [--object-share s]\n" +
             "                                   [--approach short,turn] [--offset-mm -40,60] [--tool-bands lo,hi,share,...|none]\n" +
             "                                   [--accidents 0.12[,0.4] | --no-accidents] [--accident-kinds jerk,overshoot,wrong-way,slip,rush[:weight]]]\n" +
-            "                   [--dry-run --layouts 1-200 [--rows] [--features <csv>] [--chain] [--lag <s>]]";
+            "                   [--dry-run --layouts 1-200 [--rows] [--features <csv>] [--chain] [--lag <s>]]\n" +
+            "                   [--dry-run --scene <file> --audit-take <take dir>... [--lag <s>] [--rows]]";
 
         public static int Run(string[] args)
         {
@@ -106,6 +107,7 @@ namespace Teleop.Eval.JointDrive
             bool rows = false;
             string? featuresPath = null;
             var dryOptions = new DryRunOptions();
+            var auditTakes = new List<string>(); // docs/adr/0038 "M, motion": recorded mixed takes read back against the model
             MotionCaps Caps() => mixedOptions.Caps ??= MixedOptions.DefaultCaps();
             void PerJoint(string text, float[] into, string option)
             {
@@ -161,6 +163,7 @@ namespace Teleop.Eval.JointDrive
                         case "--layouts": ParseRange(Next(), "--layouts", out layoutsFrom, out layoutsTo); break;
                         case "--rows": rows = true; break;
                         case "--features": featuresPath = Next(); break;
+                        case "--audit-take": auditTakes.Add(Next()); break;
                         case "--chain": dryOptions.Chain = true; break; // a dry run's layouts each from where the last left the arm, as the twin's takes
                         case "--lag": dryOptions.LagSeconds = Number(); break; // a dry run's adds look at the commanded way this late, as at a measured track
                         case "--max-joint-speed": PerJoint(Next(), Caps().JointSpeed, "--max-joint-speed"); break;
@@ -257,7 +260,8 @@ namespace Teleop.Eval.JointDrive
                 if (replays > 0 && (take == null || dryRun)) throw new ArgumentException("--replays records more takes: it needs --take, and a dry run records none");
                 if (layoutsTo >= layoutsFrom && (!dryRun || !safety)) throw new ArgumentException("--layouts plans a safety script on RobotHost's layouts of --scene: a dry run");
                 if (featuresPath != null && (layoutsTo < layoutsFrom || script != DriveScript.Mixed)) throw new ArgumentException("--features writes each planned move of a mixed dry run over --layouts");
-                if ((dryOptions.Chain || dryOptions.LagSeconds != 0) && layoutsTo < layoutsFrom) throw new ArgumentException("--chain and --lag are for a dry run over --layouts");
+                if (auditTakes.Count > 0 && (scenePath == null || !dryRun || layoutsTo >= layoutsFrom)) throw new ArgumentException("--audit-take reads recorded takes with --scene in a --dry-run, without --layouts");
+                if ((dryOptions.Chain || dryOptions.LagSeconds != 0) && layoutsTo < layoutsFrom && auditTakes.Count == 0) throw new ArgumentException("--chain and --lag are for a dry run over --layouts");
                 if (!(dryOptions.LagSeconds >= 0 && dryOptions.LagSeconds <= 1)) throw new ArgumentException("--lag must be in [0, 1] s");
                 if (replays > 0 && !simulated) throw new ArgumentException("--replays has RobotHost move the objects, which only the Isaac twin can: it needs --simulated-robot");
                 if (!(speed > 0f) || speed > MaxSpeedRadPerSec) throw new ArgumentException($"--speed must be in (0, {MaxSpeedRadPerSec}] rad/s, the headset slider's range");
@@ -310,6 +314,7 @@ namespace Teleop.Eval.JointDrive
                 // A safety script's dry run plans around the scene's objects where the file puts them.
                 List<SafetyObject>? nominal = scene == null ? null : scene.Objects.Select(o => WorldView.Bounds(o, 1.0, o.Nominal.X, o.Nominal.Y,
                     o.Nominal.Z, o.Nominal.Qw, o.Nominal.Qx, o.Nominal.Qy, o.Nominal.Qz, WorldView.ShapesOf(scene))).ToList();
+                if (auditTakes.Count > 0) return TakeAudit.Run(scene!, profile, auditTakes, dryOptions.LagSeconds > 0 ? dryOptions.LagSeconds : 0.2, rows);
                 if (layoutsTo >= layoutsFrom)
                 {
                     return MixedDryRun.Run(script.Value, scene!, profile, envelope, speed, seconds, seed, layoutsFrom, layoutsTo, safetyOptions, mixedOptions, rows, featuresPath, dryOptions);

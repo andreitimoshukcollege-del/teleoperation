@@ -1221,6 +1221,11 @@ namespace Teleop.Eval.JointDrive
             DriveFault fault = DriveFault.None;
             List<SentCommand> tape = c.Tape;
             var player = new TapePlayer(tape);
+            // Said at the end, as a source's drive says it: a held clock sends the rest of the tape later than the source did.
+            long framesBefore = c.Link.Frames;
+            int pauses = 0;
+            double pausedSeconds = 0;
+            bool paused = false;
             while (true)
             {
                 long now = Stopwatch.GetTimestamp();
@@ -1231,6 +1236,13 @@ namespace Teleop.Eval.JointDrive
                 fault = watchdog.Check(now / (double)tps);
                 if (fault != DriveFault.None || c.Stop.IsSet) break;
                 if (healthy) clock += dt;
+                else pausedSeconds += dt;
+                if (healthy == paused)
+                {
+                    paused = !healthy;
+                    if (paused) pauses++;
+                }
+
                 double planTime = c.Plan.ScriptStart + clock;
                 while (moves < c.Plan.Moves.Count && c.Plan.Moves[moves].Start <= planTime)
                 {
@@ -1255,6 +1267,8 @@ namespace Teleop.Eval.JointDrive
                 Thread.Sleep(1);
             }
 
+            Console.WriteLine($"[joint-drive] replay {replay}: sent {player.Played} of the tape's {tape.Count} commands, received {c.Link.Frames - framesBefore} frames" +
+                (pauses > 0 ? FormattableString.Invariant($", paused {pauses} time(s) for {pausedSeconds:0.0} s in all") : ""));
             if (fault != DriveFault.None || c.Stop.IsSet)
             {
                 ArmPose hold = c.Link.Measured;

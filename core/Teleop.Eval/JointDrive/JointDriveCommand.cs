@@ -83,7 +83,7 @@ namespace Teleop.Eval.JointDrive
             "                   [--script mixed [--replays 0] [--max-joint-speed <rad/s>[,x4]] [--max-joint-accel <rad/s2>[,x4]] [--max-wrist-speed <m/s>]\n" +
             "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style | --style p,r,t,s] [--blind n,r,v,l[,q,h]] [--pause s,min,max] [--pullback s] [--pass-share s] [--object-share s]\n" +
             "                                   [--approach short,turn] [--offset-mm -40,60] [--tool-bands lo,hi,share,...|none]\n" +
-            "                                   [--accidents 0.12[,0.4] | --no-accidents] [--accident-kinds jerk,overshoot,wrong-way,slip,rush[:weight]]]\n" +
+            "                                   [--accidents 0.12[,0.4] | --no-accidents] [--no-accident-aim] [--accident-kinds jerk,overshoot,wrong-way,slip,rush[:weight]]]\n" +
             "                   [--dry-run --layouts 1-200 [--rows] [--features <csv>] [--chain] [--lag <s>]]\n" +
             "                   [--dry-run --scene <file> --audit-take <take dir>... [--lag <s>] [--rows]]";
 
@@ -223,6 +223,7 @@ namespace Teleop.Eval.JointDrive
                         case "--max-peak-speed": Caps().MaxPeakSpeed = Number(); break;
                         case "--no-caps": mixedOptions.Caps = null; break;
                         case "--no-accidents": mixedOptions.AccidentShare = mixedOptions.AccidentNearShare = 0; break;
+                        case "--no-accident-aim": mixedOptions.AimAccidents = false; break; // the accidents near objects drawn as before 2026-11-24
                         case "--accidents":
                             // the share of parts that carry an accident, and the share of aims and passes on top (docs/adr/0038 "M, motion")
                             double[] ac = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();

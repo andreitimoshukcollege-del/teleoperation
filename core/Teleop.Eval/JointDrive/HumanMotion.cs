@@ -170,6 +170,16 @@ namespace Teleop.Eval.JointDrive
         /// <summary>After a jerk or a slip, the hand is still a moment before it recovers, s.</summary>
         public const double StartleLow = 0.08, StartleHigh = 0.35;
 
+        /// <summary>
+        /// The hand's reaction (docs/adr/0038 "M, motion", the 2026-11-24 review): with <see cref="HumanOperator.AccidentReactions"/>, every
+        /// jerk, slip, overshoot and rush holds where its fast submovement left the hand this long before the recovery begins, s (people react
+        /// to the unexpected in about 0.2 s). Aimed at an object or not, the same law: holding is no sign of a contact.
+        /// </summary>
+        public const double ReactionLow = 0.2, ReactionHigh = 0.4;
+
+        /// <summary>A jerk's onset, as a fraction of the part it comes in, with <see cref="HumanOperator.AccidentReactions"/> (before: 0.05-0.9).</summary>
+        public const double ReactedJerkOnsetLow = 0.3, ReactedJerkOnsetHigh = 0.95;
+
         /// <summary>An accident's span of the arm's own limits goes on this long after its fast submovement ends, s: the slowing after it (the acceleration is measured over six ticks).</summary>
         public const double CapsTail = 0.15;
 
@@ -891,6 +901,16 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public MotionCaps? AccidentCaps { get; set; }
 
+        /// <summary>
+        /// For the next <see cref="MixedTo"/>'s accident (docs/adr/0038 "M, motion", the 2026-11-24 review: accidents aimed at an object the hand is
+        /// near): where it carries the wrist, as a displacement from the move's goal. A jerk, an overshoot, a slip and a rush go there instead of
+        /// their drawn way and size; a wrong way is as before. Null: drawn as before. Cleared by every <see cref="MixedTo"/>.
+        /// </summary>
+        public Vector3? AccidentReach { get; set; }
+
+        /// <summary>The accidents' reaction law (<see cref="AccidentModel.ReactionLow"/>): on for the mixed script since the 2026-11-24 review.</summary>
+        public bool AccidentReactions { get; set; }
+
         /// <summary>The last <see cref="MixedFree"/>'s or <see cref="MixedTo"/>'s accident, when it made one: its onset and when the hand had recovered (its motion's end), seconds on the hand's timeline; NaN when it made none.</summary>
         public double AccidentOnset { get; private set; } = double.NaN;
 
@@ -1241,6 +1261,7 @@ namespace Teleop.Eval.JointDrive
             {
                 Walls = null;
                 WallsFrom = double.PositiveInfinity;
+                AccidentReach = null;
             }
         }
 
@@ -1324,12 +1345,12 @@ namespace Teleop.Eval.JointDrive
                 case Teleop.RobotArm.Wire.ScriptMoveKind.Overshoot:
                 {
                     // Fast to a point past the target, then back to it as a correction is made (a moment's reaction first).
-                    Vector3 past = goal + u * (float)Draw.Uniform(ref _rng, AccidentModel.OvershootMin, AccidentModel.OvershootMax);
+                    Vector3 past = AccidentReach.HasValue ? goal + AccidentReach.Value : goal + u * (float)Draw.Uniform(ref _rng, AccidentModel.OvershootMin, AccidentModel.OvershootMax);
                     TargetAngles(tl, out float tp, out float tr);
                     (double s0, double d0) = Push(tl, start, past - from, PitchStep(tp, pitch), RollStep(tr, roll), Peak(stretch));
                     tl.Accidents.Add((s0, s0 + d0 + AccidentModel.CapsTail));
-                    return Transport(tl, goal, s0 + Draw.Uniform(ref _rng, 0.9, 1.15) * d0, slow: slow * HandModel.CorrectionSlow, tolerance: tolerance, pitchGoal: pitch,
-                        rollGoal: roll, via: false);
+                    double back = AccidentReactions ? s0 + d0 + Reaction() : s0 + Draw.Uniform(ref _rng, 0.9, 1.15) * d0;
+                    return Transport(tl, goal, back, slow: slow * HandModel.CorrectionSlow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll, via: false);
                 }
                 case Teleop.RobotArm.Wire.ScriptMoveKind.WrongWay:
                 {
@@ -1355,10 +1376,11 @@ namespace Teleop.Eval.JointDrive
                     Vector3 dir = Draw.Chance(ref _rng, AccidentModel.SlipDownShare)
                         ? Vector3.Normalize(new Vector3(0f, 0f, -1f) + Draw.Across(ref _rng, Vector3.UnitZ, 0.35))
                         : Vector3.Normalize(u + Draw.Across(ref _rng, u, 0.5));
-                    (double s0, double d0) = Push(tl, at, dir * (float)Draw.Uniform(ref _rng, AccidentModel.SlipMin, AccidentModel.SlipMax), 0f, 0f, Jolt(stretch));
+                    Vector3 slip = dir * (float)Draw.Uniform(ref _rng, AccidentModel.SlipMin, AccidentModel.SlipMax);
+                    (double s0, double d0) = Push(tl, at, AccidentReach ?? slip, 0f, 0f, Jolt(stretch));
                     tl.Accidents.Add((s0, s0 + d0 + AccidentModel.CapsTail));
                     onset = s0;
-                    double back = Math.Max(s0 + d0, primaryEnd - 0.1) + Draw.Uniform(ref _rng, AccidentModel.StartleLow, AccidentModel.StartleHigh);
+                    double back = Math.Max(s0 + d0, primaryEnd - 0.1) + (AccidentReactions ? Reaction() : Draw.Uniform(ref _rng, AccidentModel.StartleLow, AccidentModel.StartleHigh));
                     return Transport(tl, goal, back, slow: slow * HandModel.CorrectionSlow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll, via: false);
                 }
                 default:
@@ -1380,11 +1402,12 @@ namespace Teleop.Eval.JointDrive
                     }
 
                     TargetAngles(tl, out float tp, out float tr);
-                    (double s1, double d1) = Push(tl, s0, goal - TargetEndpoint(tl), PitchStep(tp, pitch), RollStep(tr, roll), Peak(stretch));
+                    // Aimed: the push carries on through where the move meant to stop, into what is there.
+                    (double s1, double d1) = Push(tl, s0, goal + (AccidentReach ?? Vector3.Zero) - TargetEndpoint(tl), PitchStep(tp, pitch), RollStep(tr, roll), Peak(stretch));
                     tl.Accidents.Add((s1, s1 + d1 + AccidentModel.CapsTail));
                     onset = s1;
-                    return Transport(tl, goal, s1 + Draw.Uniform(ref _rng, 0.8, 1.0) * d1, slow: slow * HandModel.CorrectionSlow, tolerance: tolerance, pitchGoal: pitch,
-                        rollGoal: roll, via: false);
+                    double back = AccidentReactions ? s1 + d1 + Reaction() : s1 + Draw.Uniform(ref _rng, 0.8, 1.0) * d1;
+                    return Transport(tl, goal, back, slow: slow * HandModel.CorrectionSlow, tolerance: tolerance, pitchGoal: pitch, rollGoal: roll, via: false);
                 }
             }
         }
@@ -1400,7 +1423,7 @@ namespace Teleop.Eval.JointDrive
             Vector3 going = TargetEndpoint(tl);
             TargetAngles(tl, out float pitch, out float roll);
             double end = Math.Max(start + 0.1, tl.MotionEnd);
-            onset = start + Draw.Uniform(ref _rng, 0.05, 0.9) * (end - start);
+            onset = start + (AccidentReactions ? Draw.Uniform(ref _rng, AccidentModel.ReactedJerkOnsetLow, AccidentModel.ReactedJerkOnsetHigh) : Draw.Uniform(ref _rng, 0.05, 0.9)) * (end - start);
             // A random direction, leaning the way the part was going (a hand jerks on along its motion as often as aside), whatever the part is.
             tl.Hand(start, out Vector3 at0, out _, out _, out _);
             tl.Endpoint(out Vector3 at1, out _, out _);
@@ -1409,9 +1432,12 @@ namespace Teleop.Eval.JointDrive
             Vector3 dir = Draw.Direction(ref _rng, 0.6f) + (float)AccidentModel.JerkLean * along;
             dir = dir.Length() > 1e-3f ? Vector3.Normalize(dir) : Vector3.UnitX;
             Vector3 jerk = dir * (float)Draw.Uniform(ref _rng, AccidentModel.JerkMin, AccidentModel.JerkMax);
-            (double s0, double d0) = Push(tl, onset, jerk, (float)(Draw.Uniform(ref _rng, -10, 10) * deg), 0f, Peak(stretch));
+            // Aimed: at the object the hand is near, landing where the reach says once the part's own motion has ended (the pitch held).
+            (double s0, double d0) = Push(tl, onset, AccidentReach ?? jerk, AccidentReach.HasValue ? 0f : (float)(Draw.Uniform(ref _rng, -10, 10) * deg), 0f, Peak(stretch));
             tl.Accidents.Add((s0, s0 + d0 + AccidentModel.CapsTail));
-            double back = Math.Max(s0 + d0, Math.Min(end, s0 + 2 * d0)) + Draw.Uniform(ref _rng, AccidentModel.StartleLow, AccidentModel.StartleHigh);
+            // With reactions the hand stays jerked off until the part's own motion has ended, then reacts: aimed or not, the same.
+            double back = AccidentReactions ? Math.Max(s0 + d0, end) + Reaction()
+                : Math.Max(s0 + d0, Math.Min(end, s0 + 2 * d0)) + Draw.Uniform(ref _rng, AccidentModel.StartleLow, AccidentModel.StartleHigh);
             return Transport(tl, going, back, slow: HandModel.CorrectionSlow, pitchGoal: pitch, rollGoal: roll, via: false);
         }
 
@@ -1422,6 +1448,8 @@ namespace Teleop.Eval.JointDrive
             tl.Moves.Add(Move(start, d, displacement, pitch, roll));
             return (start, d);
         }
+
+        private double Reaction() => Draw.Uniform(ref _rng, AccidentModel.ReactionLow, AccidentModel.ReactionHigh);
 
         private double Peak(double stretch) => Draw.Uniform(ref _rng, AccidentModel.PeakLow, AccidentModel.PeakHigh) / stretch;
 

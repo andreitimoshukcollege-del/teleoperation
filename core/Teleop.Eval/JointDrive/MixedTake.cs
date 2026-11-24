@@ -156,6 +156,13 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public double AccidentNearShare { get; set; } = 0.4;
 
+        /// <summary>
+        /// Whether the accidents placed near objects are aimed at them (docs/adr/0038 "M, motion", the 2026-11-24 review): a jerk, an overshoot, a
+        /// slip or a rush carries the hand from a kind's own distance short of the object into it, 1-3 cm past where the model first meets it;
+        /// and every accident reacts (<see cref="AccidentModel.ReactionLow"/>). Off: as before.
+        /// </summary>
+        public bool AimAccidents { get; set; } = true;
+
         /// <summary>The accidents' kinds, in proportion: jerk, overshoot, wrong way, slip, rush (<see cref="AccidentKinds"/>).</summary>
         public double[] AccidentWeights { get; set; } = { 1, 1, 1, 1, 1 };
 
@@ -515,6 +522,7 @@ namespace Teleop.Eval.JointDrive
             hand.GuardBefore = options.QuietStartSeconds;
             // An accident's ticks keep to the arm's own limits: the servos ramp at the commanded speed, which joint-drive's --speed sets.
             hand.AccidentCaps = AccidentModel.CapsFor(options.Caps, speed);
+            hand.AccidentReactions = options.AimAccidents && !options.NoAccidents;
             ulong takeSeed = rng.NextUInt64();
             // Where and when accidents come is drawn from a generator of its own (docs/adr/0038 "M, motion"), seeded from the take's.
             var take = new MixedTake(profile, model, envelope, objects, options, hand, t, new SeededRng(takeSeed), new SeededRng(takeSeed ^ 0xA5C1_DE47_5EED_0001UL));
@@ -967,6 +975,12 @@ namespace Teleop.Eval.JointDrive
                 float bearing = MathF.Atan2(o.Center.Y, o.Center.X) + MathF.PI + (float)(Draw.Uniform(ref _rng, -50, 50) * deg);
                 var dir = new Vector3(MathF.Cos(bearing), MathF.Sin(bearing), 0f);
                 Vector3 tool = new Vector3(o.Center.X, o.Center.Y, (float)Draw.Uniform(ref _rng, zLo, zHi)) + dir * (Support(o, dir) + (float)Draw.Uniform(ref _rng, 0.01, 0.06));
+                // Aimed (docs/adr/0038 "M, motion", the 2026-11-24 review): the hand stops a kind's own distance short of where the model first
+                // meets the object on this line, and the accident carries it on into the object, past that by a drawn depth.
+                bool aimed = _options.AimAccidents && kind != ScriptMoveKind.WrongWay;
+                (double reachMin, double reachMax) = AimedReach(kind);
+                float depth = MathF.Min((float)Draw.Uniform(ref _rng, AimedDepthMin, AimedDepthMax), MathF.Max(0.004f, DeepestGap(oi) - 0.002f));
+                float reach = (float)Draw.Uniform(ref _rng, reachMin, reachMax);
                 // The wrist pitched for the height (PitchAt), else up to 36 degrees either way: where the hand would stop must be in reach, in the
                 // envelope and clear of the robot itself, or no try there plans.
                 float pitch0 = PitchAt(new Vector2(tool.X, tool.Y).Length(), tool.Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg), pitch = pitch0;
@@ -988,8 +1002,41 @@ namespace Teleop.Eval.JointDrive
                     continue;
                 }
 
+                Vector3? into = null;
+                if (aimed)
+                {
+                    // Where the model first meets the object along the line in toward it, at this height and pitch, 5 mm steps from 3 cm out.
+                    Vector3 surface = tool - dir * Vector3.Dot(tool - new Vector3(o.Center.X, o.Center.Y, tool.Z), dir) + dir * Support(o, dir);
+                    float gripper = _hand.Commands.Count > 0 ? _hand.Commands[_hand.Commands.Count - 1].Gripper : 0f;
+                    float met = float.NaN;
+                    ArmPose q = last;
+                    for (float out_ = 0.03f; out_ >= -0.08f && float.IsNaN(met); out_ -= 0.005f)
+                    {
+                        if (!TrySolve(q, WristFor(surface + dir * out_, pitch), pitch, out ArmPose p)) continue;
+                        q = p;
+                        if (Gap(oi, p, float.IsNaN(gripper) ? 0f : gripper) <= 0f) met = out_;
+                    }
+
+                    if (float.IsNaN(met) || reach - depth < 0.005f)
+                    {
+                        _nearUnreachable++;
+                        continue;
+                    }
+
+                    Vector3 stop = surface + dir * (met + reach - depth);
+                    if (!TrySolve(last, WristFor(stop, pitch), pitch, out ArmPose atStop) || !_envelope.Contains(atStop) || !ArmCollision.IsValid(_profile, _model, atStop))
+                    {
+                        _nearUnreachable++;
+                        continue;
+                    }
+
+                    into = -dir * reach; // the wrist moves as the tool does: the pitch is held
+                    tool = stop;
+                }
+
                 Vector3 goal = WristFor(tool, pitch), from = _hand.TargetEnd;
 
+                _hand.AccidentReach = into;
                 if (!_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, _model, out double s, out double e, walls: DrawWalls(), accident: kind))
                 {
                     _nearRefused++;
@@ -1012,6 +1059,18 @@ namespace Teleop.Eval.JointDrive
 
             return false;
         }
+
+        /// <summary>An aimed accident's depth past where the model first meets the object, m (docs/adr/0038 "M, motion", the 2026-11-24 review).</summary>
+        public const double AimedDepthMin = 0.01, AimedDepthMax = 0.03;
+
+        /// <summary>How far an aimed accident carries the hand, m: its kind's own size (a jerk's at most 12 cm, the hand being within about 10 cm).</summary>
+        internal static (double Min, double Max) AimedReach(ScriptMoveKind kind) => kind switch
+        {
+            ScriptMoveKind.Jerk => (AccidentModel.JerkMin, 0.12),
+            ScriptMoveKind.Overshoot => (AccidentModel.OvershootMin, AccidentModel.OvershootMax),
+            ScriptMoveKind.Slip => (AccidentModel.SlipMin, AccidentModel.SlipMax),
+            _ => (0.03, AccidentModel.RushMeters),
+        };
 
         /// <summary>An index into <paramref name="weights"/>, drawn in proportion to them.</summary>
         private int Pick(List<float> weights)

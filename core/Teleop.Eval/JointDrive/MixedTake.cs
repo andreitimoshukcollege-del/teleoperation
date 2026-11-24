@@ -397,7 +397,8 @@ namespace Teleop.Eval.JointDrive
             var parts = new List<string>();
             for (int k = 0; k < MixedOptions.AccidentKinds.Length; k++)
                 parts.Add(FormattableString.Invariant($"{ScriptMoveCodec.Name(MixedOptions.AccidentKinds[k])} {_accidentsMade[k]}/{_accidentsMade[k] + _accidentsDropped[k]}"));
-            return "accidents made of drawn: " + string.Join(", ", parts);
+            int[] r = _hand.AccidentRefusals;
+            return "accidents made of drawn: " + string.Join(", ", parts) + $" (their ticks refused: IK {r[0]}, envelope or model {r[1]}, jump {r[2]}, quiet margin {r[3]}, caps {r[4]})";
         }
 
         /// <summary>

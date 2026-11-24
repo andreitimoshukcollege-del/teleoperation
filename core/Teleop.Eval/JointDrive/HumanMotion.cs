@@ -931,6 +931,9 @@ namespace Teleop.Eval.JointDrive
         /// <summary>How many ticks refused a part, by what: the IK (blocked, out of reach), the envelope or the check, a jump, the guard, the caps, a wall. For reports only.</summary>
         public int[] Refusals { get; } = new int[6];
 
+        /// <summary>Of <see cref="Refusals"/>, the ticks refused while in an accident's span, by the same causes. For reports only.</summary>
+        public int[] AccidentRefusals { get; } = new int[6];
+
         /// <summary>
         /// docs/adr/0038 (the twin check of 2026-11-23): while a layout-blind part is planned, its ticks from <see cref="WallsFrom"/>
         /// on (seconds on the hand's timeline) must also pass this model, the fixed objects as walls: a person stops at a wall, where
@@ -1640,12 +1643,12 @@ namespace Teleop.Eval.JointDrive
                 bool wild = accidents != null && accidents.InAccident(tick * Tick);
                 MotionCaps? tickCaps = wild ? wildCaps : caps;
                 ArmSolution s = solver.Solve(_profile, c.Target, c.Pitch, c.Roll);
-                if (s.Status == ArmSolveStatus.Blocked || s.Status == ArmSolveStatus.Approaching || s.ReachClamped) return Refuse(0);
-                if (!_envelope.Contains(s.Pose) || !ArmCollision.IsValid(_profile, check, s.Pose)) return Refuse(1);
-                if (Vector3.Distance(s.Position, last) > (wild ? wildStep : step)) return Refuse(2);
-                if (guard != null && (tick * Tick < GuardBefore || tick * Tick >= GuardFrom) && !ArmCollision.IsValid(_profile, guard, s.Pose)) return Refuse(3);
-                if (walls != null && !wild && tick * Tick >= WallsFrom && !ArmCollision.IsValid(_profile, walls, s.Pose)) return Refuse(5);
-                if (tickCaps != null && !tickCaps.Allows(history, s.Pose, Tick)) return Refuse(4);
+                if (s.Status == ArmSolveStatus.Blocked || s.Status == ArmSolveStatus.Approaching || s.ReachClamped) return RefuseTick(wild, 0);
+                if (!_envelope.Contains(s.Pose) || !ArmCollision.IsValid(_profile, check, s.Pose)) return RefuseTick(wild, 1);
+                if (Vector3.Distance(s.Position, last) > (wild ? wildStep : step)) return RefuseTick(wild, 2);
+                if (guard != null && (tick * Tick < GuardBefore || tick * Tick >= GuardFrom) && !ArmCollision.IsValid(_profile, guard, s.Pose)) return RefuseTick(wild, 3);
+                if (walls != null && !wild && tick * Tick >= WallsFrom && !ArmCollision.IsValid(_profile, walls, s.Pose)) return RefuseTick(wild, 5);
+                if (tickCaps != null && !tickCaps.Allows(history, s.Pose, Tick)) return RefuseTick(wild, 4);
                 if (caps != null || wildCaps != null)
                 {
                     for (int i = 0; i < kept - 1; i++) history[i] = history[i + 1];
@@ -1658,6 +1661,12 @@ namespace Teleop.Eval.JointDrive
             }
 
             return true;
+        }
+
+        private bool RefuseTick(bool wild, int why)
+        {
+            if (wild) AccidentRefusals[why]++;
+            return Refuse(why);
         }
 
         private bool Refuse(int why)

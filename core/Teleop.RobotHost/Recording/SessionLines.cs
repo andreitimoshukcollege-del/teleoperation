@@ -33,10 +33,8 @@ namespace Teleop.RobotHost.Recording
         public static string Keepalive(long t, long operatorTicks, long operatorTicksPerSecond) =>
             "KA|" + I(t) + "|" + I(operatorTicks) + "|" + I(operatorTicksPerSecond);
 
-        /// <param name="handoffTicks">When the plant handed the command's relay output to the relay (its <c>RO</c>'s time), for an
-        /// accepted command; null leaves the field out, as every record before 2026-11-24 has it (docs/adr/0038 N).</param>
         public static string JointCommand(long t, long tDeliver, uint sequence, long captureTicks, JointCommandOutcome outcome,
-            ReadOnlySpan<JointTarget> targets, long? handoffTicks = null)
+            ReadOnlySpan<JointTarget> targets)
         {
             var b = new StringBuilder(32 + targets.Length * 24);
             b.Append("JC|").Append(I(t)).Append('|').Append(I(tDeliver)).Append('|').Append(sequence.ToString(CultureInfo.InvariantCulture))
@@ -48,7 +46,6 @@ namespace Teleop.RobotHost.Recording
                     .Append(':').Append(F(targets[i].Speed));
             }
 
-            if (handoffTicks.HasValue) b.Append('|').Append(I(handoffTicks.Value));
             return b.ToString();
         }
 

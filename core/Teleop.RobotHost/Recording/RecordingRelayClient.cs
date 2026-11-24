@@ -24,21 +24,9 @@ namespace Teleop.RobotHost.Recording
             _clock = clock ?? throw new ArgumentNullException(nameof(clock));
         }
 
-        /// <summary>
-        /// When the last target array was handed to the relay (this host's clock), the <c>RO</c>'s time when one was recorded:
-        /// a joint command's hand-off (docs/adr/0038 N, <c>JC</c>'s <c>tHandoff</c>). Stamped on every send, recording or not.
-        /// </summary>
-        public long LastSendTicks { get; private set; }
-
-        /// <summary>Target arrays handed to the relay since construction, so a caller can tell whether a call sent one.</summary>
-        public long Sends { get; private set; }
-
         public void Send(ReadOnlySpan<JointTarget> targets)
         {
-            long now = _clock.NowTicks;
-            LastSendTicks = now;
-            Sends++;
-            if (_recorder.IsActive) _recorder.Record(SessionLines.RelayOut(now, targets));
+            if (_recorder.IsActive) _recorder.Record(SessionLines.RelayOut(_clock.NowTicks, targets));
             _inner.Send(targets);
         }
 

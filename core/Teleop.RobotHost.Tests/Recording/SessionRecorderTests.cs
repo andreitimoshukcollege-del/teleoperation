@@ -112,9 +112,6 @@ namespace Teleop.RobotHost.Tests.Recording
             Assert.Equal("JC|100|105|7|99|A|1:0.25:2.5;10:1:0",
                 SessionLines.JointCommand(100, 105, 7, 99, JointCommandOutcome.Accepted, targets));
             Assert.Equal("JC|1|1|0|0|S|", SessionLines.JointCommand(1, 1, 0, 0, JointCommandOutcome.Stale, ReadOnlySpan<JointTarget>.Empty));
-            // An accepted command's hand-off to the relay (docs/adr/0038 N), after the targets; absent when not handed off.
-            Assert.Equal("JC|100|105|7|99|A|1:0.25:2.5;10:1:0|107",
-                SessionLines.JointCommand(100, 105, 7, 99, JointCommandOutcome.Accepted, targets, 107));
             Assert.Equal("RO|5|1:560.5:597.2", SessionLines.RelayOut(5, new[] { new JointTarget(1, 560.5f, 597.2f) }));
             Assert.Equal("RI|6|1:1:512;2:0:0",
                 SessionLines.RelayIn(6, new[] { new JointFeedbackEntry(1, true, 512f), new JointFeedbackEntry(2, false, 0f) }));
@@ -206,11 +203,7 @@ namespace Teleop.RobotHost.Tests.Recording
                 File.WriteAllText(control, session);
                 Assert.True(WaitFor(() => recorder.IsActive));
                 clock.Now = 42;
-                Assert.Equal(0, client.Sends);
                 client.Send(new[] { new JointTarget(1, 500f, 2200f) });
-                // The hand-off a JC carries is the RO's own time (docs/adr/0038 N).
-                Assert.Equal(1, client.Sends);
-                Assert.Equal(42, client.LastSendTicks);
                 Span<JointFeedbackEntry> buffer = new JointFeedbackEntry[4];
                 Assert.True(client.TryReceiveFeedback(buffer, out int n));
                 Assert.Equal(1, n);

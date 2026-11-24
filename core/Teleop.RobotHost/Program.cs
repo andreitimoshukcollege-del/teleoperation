@@ -85,8 +85,7 @@ namespace Teleop.RobotHost
                 : null;
             // What this session's file already says about the subscriber, the sender and the uplink.
             var sessionState = recorder != null ? new SessionStateLines(recorder.Record) : null;
-            RecordingRelayClient? recordingRelay = recorder != null ? new RecordingRelayClient(relay, recorder, clock) : null;
-            IRelayClient plantRelay = recordingRelay ?? relay;
+            IRelayClient plantRelay = recorder != null ? new RecordingRelayClient(relay, recorder, clock) : relay;
 
             // a.ProfilePath omitted falls back to RobotArmProfile.JetRoverMeasuredDefault, the
             // exact configuration this codebase has always run -- see RobotHostArgs.ProfilePath's
@@ -593,19 +592,15 @@ namespace Teleop.RobotHost
 
                             // Parking or relaxed: ignored (counted, and recorded as P). The first one after start-up
                             // switches the torque on before it is applied.
-                            long sendsBefore = recordingRelay?.Sends ?? 0;
                             if (gate != null) gate.Sequence = commandSequence;
                             JointCommandOutcome outcome = power == null || power.AcceptOperatorCommand(arrivalTicks)
                                 ? plant.CommandJointAngles(jointTargetsBuffer!.AsSpan(0, targetCount), captureTicks)
                                 : JointCommandOutcome.Parked;
                             if (recorder != null && recorder.IsActive)
                             {
-                                // Read from the socket at socketTicks; reached the plant now (later only when the uplink is impaired);
-                                // an accepted one was handed to the relay at its RO's time (docs/adr/0038 N).
-                                long? handoff = outcome == JointCommandOutcome.Accepted && recordingRelay!.Sends != sendsBefore
-                                    ? recordingRelay.LastSendTicks : (long?)null;
+                                // Read from the socket at socketTicks; reached the plant now (later only when the uplink is impaired).
                                 recorder.Record(SessionLines.JointCommand(socketTicks, arrivalTicks, commandSequence, captureTicks, outcome,
-                                    jointTargetsBuffer.AsSpan(0, targetCount), handoff));
+                                    jointTargetsBuffer.AsSpan(0, targetCount)));
                             }
                         }
                     }

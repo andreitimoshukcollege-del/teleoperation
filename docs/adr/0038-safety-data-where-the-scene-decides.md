@@ -1954,3 +1954,28 @@ interface and no Core change.
   2. One twin trial with `--command-gate table:20:-0.1962` added to `isaac-jetrover-host`'s RobotHost line, by hand and not
      committed. It checks that low reaches are held (`GH`, `JC` `H`), that the arm stops short of the table, and the table
      frame.
+
+**The collision backstop clamps instead of refusing (2026-11-24, branch `work/v2-clamp6`; docs/adr/0020 amendment 2026-11-24).**
+The world-models side's request, approved by the user, for the refusals "M, motion" explains (the arm trailing its commands,
+the servo-path check from the measured pose). **Not yet run on a twin or the robot.**
+
+- **The command path** is now: the ADR 0020 check, the clamp, the hold hook, the relay. A failing command is replaced by the
+  farthest point toward it on the joint-space line from the measured pose that passes the same check (bisection, 8 rounds;
+  the largest passing point of a 16-step grid when the line is not monotone); only when no point passes is it refused. The
+  hook is asked about the command that would actually be sent, the clamped one. A clamped command it holds is `JC` `H` with
+  its `GH`, and no `JK`.
+- **Records,** fixed for the dataset side (trainer/contract/SESSION_FORMAT.md): `JC` outcomes `A` accepted, `C` clamped, `R`
+  nothing passed (held), and `S`, `P`, `H` as before; an `RO` for every command sent (`A` and `C`) with the targets sent; `JK t
+  seq alpha` per clamped command, alpha in (0, 1); `HK t measured clamp 1` (or `refuse`) at the start of every session, the
+  twin's and the robot's. A session without `HK` refused.
+- **For the dataset builder** (`robot/lerobot/teleop_lerobot/takes.py`, `scripts/gpu/replay_pairs.py`; not changed here): a
+  `C` command's action is its `RO`, the clamped targets, as for `A`. `R` keeps its meaning of a command that moved nothing,
+  now rare. Code that counts a command as driven when its outcome is `A` or `R` (`takes.py` `driven`, `replay_pairs.py`) has
+  to count `C` too.
+- **Replayed offline** through the plant (`Teleop.RobotHost --replay-commands`): of 515,479 commands in all 664 JetRover twin
+  takes, refuse mode reproduces every recorded outcome; clamp mode turns 5,617 of the 5,629 refusals into clamps (α p50 0.45,
+  spread across (0, 1)) and leaves 12 held. In the 12 mixed takes of 2026-11-24 18:44-18:49, all 322 refusals become clamps.
+  A clamped command costs the plant p50 48 µs and p99 167 µs on the GPU machine. Figures and caveats (open loop: the recorded
+  arm still held) in docs/adr/0020's amendment.
+- **Replay pairs** should diverge less: a source and its replay measured differently no longer split into "moved" and "held",
+  only into nearer and farther along the same line. Not yet measured on a new batch.

@@ -1184,8 +1184,9 @@ namespace Teleop.Eval.JointDrive
                     ArmCollision.ComputeFrames(_profile, pose, frames);
                     int li = (int)want;
                     Vector3 a = frames[li].Origin, b = li + 1 < 5 ? frames[li + 1].Origin : frames[li].ToBase(ToolInGripper);
-                    float d = SegmentDistance(point, a, b);
-                    if (d < 0.012f || d > 0.04f) continue;
+                    float d = SegmentDistance(point, a, b, out float along);
+                    // Along the link's middle, not by the joint at its far end (there the next link meets it first).
+                    if (d < 0.012f || d > 0.04f || along < 0.15f || along > 0.75f) continue;
                     candidates.Add((pose, want));
                 }
 
@@ -1289,10 +1290,10 @@ namespace Teleop.Eval.JointDrive
 
         private ArmTouch? _linkArm;
 
-        private static float SegmentDistance(Vector3 p, Vector3 a, Vector3 b)
+        private static float SegmentDistance(Vector3 p, Vector3 a, Vector3 b, out float t)
         {
             Vector3 ab = b - a;
-            float t = ab.LengthSquared() > 1e-9f ? Math.Clamp(Vector3.Dot(p - a, ab) / ab.LengthSquared(), 0f, 1f) : 0f;
+            t = ab.LengthSquared() > 1e-9f ? Math.Clamp(Vector3.Dot(p - a, ab) / ab.LengthSquared(), 0f, 1f) : 0f;
             return Vector3.Distance(p, a + t * ab);
         }
 

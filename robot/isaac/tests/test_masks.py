@@ -190,9 +190,16 @@ def _shapes_scene():
     return scene_module.load(os.path.join(REPO, "core", "Scenes", "fr3-duo-bench.json"))
 
 
-def test_each_objects_own_shapes_carry_its_label_through_a_box_turned_mesh_a_resize_and_a_relabel():
+def test_each_objects_own_shapes_carry_its_label_through_a_box_turned_mesh_a_resize_and_a_relabel(monkeypatch):
     _pxr()
+    import sys
+    import types
+    import pxr
     from pxr import Usd, UsdGeom
+    if not hasattr(pxr, "PhysxSchema"):  # Isaac's Python without Kit: the renderer's copy (physics=False) never uses it
+        stub = types.ModuleType("pxr.PhysxSchema")
+        monkeypatch.setitem(sys.modules, "pxr.PhysxSchema", stub)
+        monkeypatch.setattr(pxr, "PhysxSchema", stub, raising=False)
     from teleop_isaac.renderer import clear_labels, label_object, labels_lost, metric_box, set_labels
 
     s = _shapes_scene()

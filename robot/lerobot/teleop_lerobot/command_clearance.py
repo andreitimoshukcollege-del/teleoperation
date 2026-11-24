@@ -365,6 +365,11 @@ class Engine:
         first = np.ones(len(key), bool)
         first[1:] = key[1:] != key[:-1]
         f = np.flatnonzero(first)
+        if groups is not None:  # each pose's most promising pair: the group's threshold the least of its poses' bounds
+            by_pose = np.lexsort((lb, tp))
+            lead = np.ones(len(by_pose), bool)
+            lead[1:] = tp[by_pose][1:] != tp[by_pose][:-1]
+            f = by_pose[lead]
         _, ub_f = self._bounds(centres, axes, half, verts, tp[f], box[f], piece[f])
         thr = best.copy()
         np.minimum.at(thr, key[f], ub_f)

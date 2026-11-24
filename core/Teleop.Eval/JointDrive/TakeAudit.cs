@@ -57,6 +57,9 @@ namespace Teleop.Eval.JointDrive
             var kindRows = new Dictionary<string, int[]>(); // kind: n, cmd within 2 cm, cmd touch, meas touch, physics
             var cmdGap = new List<double>();
             var measGap = new List<double>();
+            var agree = new int[4, 4]; // predictor: commanded in, commanded in for the lag, the follower in, the measured arm in; TP FP FN TN against physics
+            var followErr = new List<double>();
+            var sourceOnsets = new int[2];
             foreach (string take in takes)
             {
                 string log = Path.Combine(take, "robothost.jlog");
@@ -136,6 +139,8 @@ namespace Teleop.Eval.JointDrive
                 if (moves.Count == 0 || cmd.Count == 0) continue;
                 double t0 = moves.Min(m => m.Start);
                 double takeLag = Lag(cmd, meas);
+                List<Sample> follow = Follow(cmd, FollowDelay, FollowTau, FollowSpeed);
+                followErr.Add(Rms(follow, meas));
                 lags.Add(takeLag);
                 if (rows) Console.WriteLine(FormattableString.Invariant($"  {Path.GetFileName(take)} ({group}): lag {takeLag:0.00} s, {cmd.Count(c => c.Clamped)} clamped of {cmd.Count}"));
 
@@ -206,12 +211,23 @@ namespace Teleop.Eval.JointDrive
                         gm = MathF.Min(gm, MinGap(s, objects, out _));
                     }
 
+                    float gf = float.PositiveInfinity;
+                    foreach (Sample s in follow)
+                    {
+                        if (s.T < a.Start || s.T > a.End + lag) continue;
+                        gf = MathF.Min(gf, MinGap(s, objects, out _));
+                    }
+
                     bool hit = physics.Any(c => c.Object != 0 && c.T >= a.Start && c.T <= a.End + lag);
                     // A command into an object for at least the arm's lag: the measured arm, trailing it, gets there too.
                     bool longTouch = !double.IsNaN(touchAt) && lastTouch - touchAt >= lag - 1e-6;
                     if (gc <= 0.02f) accidentsNearCmd++;
                     if (gc <= 0f) accidentsTouchCmd++;
                     if (longTouch) accidentsTouchCmdLate++;
+                    Tally(agree, 0, gc <= 0f, hit);
+                    Tally(agree, 1, longTouch, hit);
+                    Tally(agree, 2, gf <= 0f, hit);
+                    Tally(agree, 3, gm <= 0f, hit);
                     if (gm <= 0f) accidentsTouchMeas++;
                     if (hit) accidentsPhysics++;
                     if (clamped > 0) accidentsClamped++;
@@ -236,6 +252,11 @@ namespace Teleop.Eval.JointDrive
                     Move? under = moves.Where(m => !IsAccident(m.Kind) && m.Start <= t).OrderBy(m => m.Start).LastOrDefault();
                     Move? acc = moves.FirstOrDefault(m => IsAccident(m.Kind) && t >= m.Start && t <= m.End + lag);
                     if (acc != null) onsetsInAccident++;
+                    if (group.Contains(" source", StringComparison.Ordinal))
+                    {
+                        sourceOnsets[0]++;
+                        if (acc != null) sourceOnsets[1]++;
+                    }
                     List<SafetyObject> objects = ObjectsAt(t);
                     // The command's closest to the object over the lag before the contact.
                     float g = float.PositiveInfinity;
@@ -266,10 +287,72 @@ namespace Teleop.Eval.JointDrive
                               MixedDryRun.Percentiles(measGap.Select(x => x * 1000).ToList(), "0"));
             Console.WriteLine(FormattableString.Invariant(
                 $"  physics contacts with objects {onsets}: begun in an accident's span {onsetsInAccident} ({100.0 * onsetsInAccident / Math.Max(1, onsets):0}%); the command into the object within the lag before {onsetsCmdTouch}"));
+            Console.WriteLine(FormattableString.Invariant($"    of them in source takes (not replays) {sourceOnsets[0]}: in an accident's span {sourceOnsets[1]}"));
+            string[] predictors = { "the command in an object", "the command in one for the lag", $"the follower (delay {FollowDelay:0.00} s, tau {FollowTau:0.00} s, {FollowSpeed:0.00} rad/s) in one", "the measured arm in one" };
+            Console.WriteLine("  follower against the measured joints, rms largest-joint error rad: " + MixedDryRun.Percentiles(followErr, "0.000"));
+            for (int k = 0; k < 4; k++)
+                Console.WriteLine(FormattableString.Invariant($"  accidents, {predictors[k]} against a physics contact: both {agree[k, 0]}, only the model {agree[k, 1]}, only physics {agree[k, 2]}, neither {agree[k, 3]}"));
             Console.WriteLine("  their tool point (measured), cm from the base frame: 5 cm bins from -20: " + MixedDryRun.Histogram(onsetTool.Select(z => z * 100.0), -20, 5, 8) +
                               "; p10/p50/p90 " + MixedDryRun.Percentiles(onsetTool.Select(z => z * 100.0).ToList(), "0.0"));
             Console.WriteLine("  touching links: " + string.Join(", ", onsetLink.OrderByDescending(k => k.Value).Select(k => k.Key + " " + k.Value)));
             return 0;
+        }
+
+        /// <summary>The follower: the command <see cref="FollowDelay"/> late, each joint at most <see cref="FollowSpeed"/>, and lagging it with time constant <see cref="FollowTau"/>.</summary>
+        internal static double FollowDelay = 0.0, FollowTau = 0.15, FollowSpeed = 3.7;
+
+        private static void Tally(int[,] t, int k, bool model, bool physics) => t[k, model ? (physics ? 0 : 1) : (physics ? 2 : 3)]++;
+
+        private static List<Sample> Follow(List<Sample> cmd, double delay, double tau, double speed)
+        {
+            var output = new List<Sample>(cmd.Count);
+            var q = new float[5];
+            var target = new float[5];
+            int k = 0;
+            double last = cmd[0].T;
+            Fill(cmd[0].Pose, q);
+            foreach (Sample s in cmd)
+            {
+                double dt = s.T - last;
+                last = s.T;
+                while (k + 1 < cmd.Count && cmd[k + 1].T <= s.T - delay) k++;
+                Fill(cmd[k].Pose, target);
+                double a = dt <= 0 ? 0 : 1 - Math.Exp(-dt / Math.Max(1e-3, tau));
+                for (int j = 0; j < 5; j++)
+                {
+                    double step = (target[j] - q[j]) * a, max = speed * dt;
+                    q[j] += (float)Math.Clamp(step, -max, max);
+                }
+
+                output.Add(new Sample(s.T, new ArmPose(q[0], q[1], q[2], q[3], q[4]), cmd[k].Gripper, false));
+            }
+
+            return output;
+        }
+
+        private static void Fill(in ArmPose p, float[] q)
+        {
+            q[0] = p.BaseYaw;
+            q[1] = p.Proximal;
+            q[2] = p.Distal;
+            q[3] = p.Wrist;
+            q[4] = p.Roll;
+        }
+
+        private static double Rms(List<Sample> track, List<Sample> meas)
+        {
+            double err = 0;
+            int n = 0, k = 0;
+            foreach (Sample m in meas)
+            {
+                while (k + 1 < track.Count && track[k + 1].T <= m.T) k++;
+                if (track[k].T > m.T) continue;
+                double d = m.Pose.MaxJointDelta(track[k].Pose);
+                err += d * d;
+                n++;
+            }
+
+            return n == 0 ? double.NaN : Math.Sqrt(err / n);
         }
 
         private static bool IsAccident(string kind) => kind == "jerk" || kind == "overshoot" || kind == "wrong-way" || kind == "slip" || kind == "rush";

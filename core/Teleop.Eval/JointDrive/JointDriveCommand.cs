@@ -164,6 +164,12 @@ namespace Teleop.Eval.JointDrive
                         case "--rows": rows = true; break;
                         case "--features": featuresPath = Next(); break;
                         case "--audit-take": auditTakes.Add(Next()); break;
+                        case "--follow":
+                            // the audit's follower: delay s, time constant s, joint speed rad/s (docs/adr/0038 "M, motion")
+                            double[] fo = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (fo.Length != 3) throw new ArgumentException("--follow is three numbers: delay s, time constant s, joint speed rad/s");
+                            (TakeAudit.FollowDelay, TakeAudit.FollowTau, TakeAudit.FollowSpeed) = (fo[0], fo[1], fo[2]);
+                            break;
                         case "--chain": dryOptions.Chain = true; break; // a dry run's layouts each from where the last left the arm, as the twin's takes
                         case "--lag": dryOptions.LagSeconds = Number(); break; // a dry run's adds look at the commanded way this late, as at a measured track
                         case "--max-joint-speed": PerJoint(Next(), Caps().JointSpeed, "--max-joint-speed"); break;

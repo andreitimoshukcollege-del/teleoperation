@@ -1060,9 +1060,10 @@ namespace Teleop.Eval.JointDrive
             float startPitch = pitch;
             Vector3 startWrist = wrists[stage];
             ArmPose startPose = poses[stage];
-            // As a layout-blind goal there is pitched (its height's, PitchAt), or a low one's when the blind goals are drawn as before.
+            // As a layout-blind goal's is: for a height drawn from the blind goals' bands (PitchAt, the move before an aim being a free one), or
+            // a low goal's when the blind goals are drawn as before; so an aim turns the wrist on its way as much as a free move does.
             float turn = (_options.Reach.ToolBands != null
-                ? PitchAt(new Vector2(tools[first + stage].X, tools[first + stage].Y).Length(), tools[first + stage].Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg)
+                ? PitchAt(new Vector2(tools[first + stage].X, tools[first + stage].Y).Length(), Draw.Band(ref _rng, _options.Reach.ToolBands)) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg)
                 : (float)(Draw.Uniform(ref _rng, _options.Reach.LowPitchLowDegrees, _options.Reach.LowPitchHighDegrees) * deg)) - pitch;
             // A free move's turn grows with its length (free transports: about 13 degrees per 10 cm at the median); a large turn over a
             // short approach broke the caps, and the moves they stretched were slower than free ones.

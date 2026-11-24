@@ -184,6 +184,23 @@ namespace Teleop.Eval.JointDrive
 
         public static Vector3 Gaussian3(ref SeededRng rng) => new Vector3((float)Normal(ref rng), (float)Normal(ref rng), (float)Normal(ref rng));
 
+        /// <summary>A height drawn from bands of (low, high, share) triples (<see cref="BlindReach.ToolBands"/>): a band by its share, then uniformly within it.</summary>
+        public static float Band(ref SeededRng rng, float[] bands)
+        {
+            float total = 0f;
+            for (int i = 2; i < bands.Length; i += 3) total += bands[i];
+            double u = rng.NextDouble() * total;
+            int k = 0;
+            for (int i = 0; i < bands.Length; i += 3)
+            {
+                k = i;
+                u -= bands[i + 2];
+                if (u < 0) break;
+            }
+
+            return (float)Uniform(ref rng, bands[k], bands[k + 1]);
+        }
+
         /// <summary>A random direction, its vertical part scaled by <paramref name="zScale"/> before normalizing (people move less up and down).</summary>
         public static Vector3 Direction(ref SeededRng rng, float zScale)
         {
@@ -1229,7 +1246,7 @@ namespace Teleop.Eval.JointDrive
             float[] bands = reach.ToolBands!;
             for (int i = 0; i < 40; i++)
             {
-                float z = DrawBand(bands);
+                float z = Draw.Band(ref _rng, bands);
                 Vector3 g;
                 if (Draw.Chance(ref _rng, reach.NearShare))
                 {
@@ -1266,23 +1283,6 @@ namespace Teleop.Eval.JointDrive
             goal = from;
             pitch = null;
             return false;
-        }
-
-        /// <summary>A height drawn from bands of (low, high, share) triples: a band by its share, then uniformly within it.</summary>
-        private float DrawBand(float[] bands)
-        {
-            float total = 0f;
-            for (int i = 2; i < bands.Length; i += 3) total += bands[i];
-            double u = _rng.NextDouble() * total;
-            int k = 0;
-            for (int i = 0; i < bands.Length; i += 3)
-            {
-                k = i;
-                u -= bands[i + 2];
-                if (u < 0) break;
-            }
-
-            return (float)Draw.Uniform(ref _rng, bands[k], bands[k + 1]);
         }
 
         // ---------------------------------------------------------------------------------------------------------------

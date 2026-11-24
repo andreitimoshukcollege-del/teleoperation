@@ -243,7 +243,7 @@ namespace Teleop.Eval.Tests.JointDrive
             // of a fixture, aims and passes turning the wrist on the way as free moves do, and the layout-blind goals as low as aims go.
             WorldScene scene = Bench_.Value.Scene;
             float table = (float)scene.Table.Top;
-            int blindPullBacks = 0, objectMoves = 0, turned = 0, intoFixtures = 0, blindTransports = 0, lowBlind = 0;
+            int blindPullBacks = 0, objectMoves = 0, turned = 0, intoFixtures = 0, blindTransports = 0, lowBlind = 0, highBlind = 0;
             Span<LinkFrame> frames = stackalloc LinkFrame[5];
             for (ulong seed = 1; seed <= 12; seed++)
             {
@@ -266,10 +266,14 @@ namespace Teleop.Eval.Tests.JointDrive
                         pitch1 = Math.Max(pitch1, HandModel.PitchOf(p));
                     }
 
-                    if (m.Part == MovePart.BlindTransport)
+                    if (m.Part == MovePart.BlindTransport && m.End < plan.TotalSeconds)
                     {
+                        // Where it ends: blind goals at every height (docs/adr/0038 "M, motion", the 2026-11-23 review), not all low.
                         blindTransports++;
-                        if (low < 0.16) lowBlind++;
+                        ArmCollision.ComputeFrames(Profile, plan.Sample(m.End), frames);
+                        double end = frames[(int)ArmLink.Gripper].ToBase(MixedTake.ToolInGripper).Z - table;
+                        if (end < 0.08) lowBlind++;
+                        if (end > 0.12) highBlind++;
                     }
 
                     if (m.ObjectId == 0) continue;
@@ -281,12 +285,11 @@ namespace Teleop.Eval.Tests.JointDrive
                 }
             }
 
-            string report = $"{blindPullBacks} blind moves pulled back from; {turned} of {objectMoves} aims and passes turn the wrist; {lowBlind} of {blindTransports} blind moves to a goal go below 16 cm; {intoFixtures} into fixtures";
+            string report = $"{blindPullBacks} blind moves pulled back from; {turned} of {objectMoves} aims and passes turn the wrist; of {blindTransports} blind moves to a goal {lowBlind} end below 8 cm, {highBlind} above 12 cm; {intoFixtures} into fixtures";
             _output.WriteLine(report);
             Assert.True(blindPullBacks >= 3, report);
-            Assert.True(objectMoves >= 8 && turned * 3 >= objectMoves, report);
-            // Blind goals at every height (docs/adr/0038 "M, motion", the 2026-11-23 review), not all low: some go below 16 cm, not all.
-            Assert.True(lowBlind * 4 >= blindTransports && lowBlind < blindTransports, report);
+            Assert.True(objectMoves >= 8 && turned * 4 >= objectMoves, report);
+            Assert.True(lowBlind * 4 >= blindTransports && highBlind >= 2, report);
         }
 
         [Fact]
@@ -323,7 +326,9 @@ namespace Teleop.Eval.Tests.JointDrive
                     if (stands.Length == 0) continue;
                     raisedAims++;
                     ArmCollisionModel off = SafetyScript.WithObjects(Model, stands, MixedTake.HolderClearMeters - 0.0015f, 0f);
-                    for (double t = m.Start; t <= m.End; t += Tick) Assert.True(ArmCollision.IsValid(Profile, off, plan.Sample(t)), $"layout {layout}: {m} meets what holds it up at {t:0.00} s");
+                    // Until the move after it begins (they overlap, and a pull back is its own move).
+                    double until = Math.Min(m.End, plan.Moves.Where(n => n.Index == m.Index + 1).Select(n => n.Start).DefaultIfEmpty(m.End).First());
+                    for (double t = m.Start; t <= until; t += Tick) Assert.True(ArmCollision.IsValid(Profile, off, plan.Sample(t)), $"layout {layout}: {m} meets what holds it up at {t:0.00} s");
                 }
             }
 

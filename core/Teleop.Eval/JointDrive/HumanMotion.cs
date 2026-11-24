@@ -181,11 +181,12 @@ namespace Teleop.Eval.JointDrive
         public const float ServoTopSpeed = 3.84f;
 
         /// <summary>
-        /// The acceleration an accident's joints may command, rad/s², over three ticks as the caps measure it: 2.4-3.8 times people's p99
-        /// (32-51). Not measured on the arm: the servo's ramp starts at its full speed (the setpoint has no acceleration limit), so the drive's
-        /// torque is the limit.
+        /// The acceleration an accident's joints may command, rad/s², over three ticks as the caps measure it (people's p99: 32-51). Not a
+        /// servo limit: a servo's setpoint ramps at its full speed from the start (servo.py's TimedSetpoint; the real one the same), so the
+        /// arm's own acceleration is its drive's torque, not measured here. This bounds the command alone: a 10 cm push at 1-1.4 m/s
+        /// commands 150-250 rad/s² at the elbow (120 refused most jerks: docs/adr/0038 "M, motion").
         /// </summary>
-        public const float Acceleration = 120f;
+        public const float Acceleration = 300f;
 
         /// <summary>The planned peak of an accident's fast submovement at the wrist, m/s (the jump check stays <see cref="HandModel.MaxWristSpeed"/> a tick).</summary>
         public const double MaxPeakSpeed = 1.4;

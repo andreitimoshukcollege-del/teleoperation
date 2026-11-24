@@ -124,7 +124,7 @@ namespace Teleop.RobotArm.Tests.World
 
             Assert.Empty(Textures("jetrover-mixed").Intersect(Textures("jetrover-mixed-holdout")));
             // Heights the train family never draws: its overhangs 4.1-19.5 cm up, the held-out bench's 2.6-4 cm and its cantilever 19-24 cm;
-            // its stands 5.1-15 cm, the held-out ones 17-21 cm and a 2.5-3.9 cm riser; its tall thin things round, the held-out post square.
+            // its stands 7.7-16 cm, the held-out ones 17-21 cm and a 2.5-3.9 cm riser; its tall thin things round, the held-out post square.
             (double Lo, double Hi) Heights(WorldScene s, SceneRole role) => (
                 s.Objects.Where(o => o.Role == role).Min(o => o.SizeZ * WorldScene.ScaleOfStep(o.StepMin)),
                 s.Objects.Where(o => o.Role == role).Max(o => o.SizeZ * WorldScene.ScaleOfStep(o.StepMax)));

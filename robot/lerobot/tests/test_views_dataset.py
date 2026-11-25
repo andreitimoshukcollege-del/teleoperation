@@ -43,8 +43,8 @@ def view1_pose(n, off=0.0):
 
 
 def render(width, height, f, p):
-    """Depth (uint16 mm to the image plane) and mask of the table top seen from ``p``: id 10, and 107 on a 6 cm square at
-    (0.3, 0) as an object lying flat would be, 0 elsewhere."""
+    """Depth (uint16 mm to the image plane) and mask of the table top seen from ``p``: id 10, and 107 on a 12 cm square at
+    (0.3, 0), 20 mm nearer, as an object standing there would be (roughly); 0 elsewhere."""
     u, v = np.meshgrid(np.arange(width) + 0.5, np.arange(height) + 0.5)
     ray = np.stack([(u - width / 2) / f, -(v - height / 2) / f, -np.ones_like(u)], axis=-1)
     world = ray @ D._quat_matrix(p[3:7]).T
@@ -52,10 +52,12 @@ def render(width, height, f, p):
     hit = np.asarray(p[:3]) + world * t[..., None]
     c, s = TABLE["center"], TABLE["size"]
     on = (t > 0) & (abs(hit[..., 0] - c[0]) < s[0] / 2) & (abs(hit[..., 1] - c[1]) < s[1] / 2)
-    depth = np.where(on, np.round(t * 1000.0), 0).astype(np.uint16)
+    depth = np.where(on, np.round(t * 1000.0), 0)
     mask = np.where(on, 10, 0).astype(np.uint16)
-    mask[on & (abs(hit[..., 0] - 0.3) < 0.03) & (abs(hit[..., 1]) < 0.03)] = 107
-    return depth, mask
+    box = on & (abs(hit[..., 0] - 0.3) < 0.06) & (abs(hit[..., 1]) < 0.06)
+    mask[box] = 107
+    depth[box] -= 20  # an object standing on the table: its surface nearer than the table's
+    return depth.astype(np.uint16), mask
 
 
 def jpeg(width, height, n, k):
@@ -140,7 +142,7 @@ def test_the_view_records_read_as_session_format_defines_them(scenarios):
     assert v1.draw["attempts"] == 2 and v0.gain == 1.1 and v0.broken == ()
     assert VW.pose_at(vs, v1, 12) == pytest.approx(view1_pose(12)) and VW.pose_at(vs, v0, 12) == v0.pose
     with pytest.raises(VW.ViewsError, match="mode static with motion"):
-        VW.parse_vw([str(x) for x in vw_row("view0")[1:21]] + ["1:2:3:4:5:6:7:8:9", ""])
+        VW.parse_vw([str(x) for x in vw_row("view0")[1:22]] + ["1:2:3:4:5:6:7:8:9", ""])
 
 
 def test_without_the_options_nothing_changes_and_with_them_only_the_view_files_are_added(scenarios, tmp_path):
@@ -327,7 +329,9 @@ def test_visibility_has_rows_for_each_view_at_its_own_pose(scenarios, geometry):
     plain = V.compute(read_take(path), geometry, rec, {"wrist": "front"})
     n = len(take.frames)
     keep = [i for i, c in enumerate(vis.columns["camera"]) if c not in ("view0", "view1")]
-    assert {k: [v[i] for i in keep] for k, v in vis.columns.items()} == plain.columns  # the CM cameras' rows as before
+    nan = lambda xs: [None if isinstance(x, float) and math.isnan(x) else x for x in xs]  # noqa: E731
+    assert ({k: nan([v[i] for i in keep]) for k, v in vis.columns.items()}
+            == {k: nan(v) for k, v in plain.columns.items()})  # the CM cameras' rows as before
     top, v0, v1 = frame_rows(vis, "top", 31), frame_rows(vis, "view0", 31), frame_rows(vis, "view1", 31)
     assert len(v0) == len(v1) == n
     same = ("frame_index", "visible_px", "expected_px", "visible_fraction", "in_frustum", "reason")

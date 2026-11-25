@@ -105,7 +105,10 @@ def check_take(take, sheet):
         if r["attempts"] == views.FALLBACK:
             out["problems"].append(f"{v.id} kept a draw that broke a rule")
         out["views"][v.id] = {"mode": v.mode, "azimuthDeg": v.azimuth, "elevationDeg": v.elevation, "distanceM": v.distance,
-                              "hfovDeg": v.hfov, "size": [v.width, v.height], "gain": r["gain"], "attempts": r["attempts"]}
+                              "hfovDeg": v.hfov, "size": [v.width, v.height], "gain": r["gain"], "attempts": r["attempts"],
+                              "broken": r["broken"]}
+        if list(v.broken) != r["broken"]:
+            out["problems"].append(f"{v.id}'s VW broken rules {r['broken']} are not the check's {list(v.broken)}")
 
     vfs = rec.get("VF", [])
     vps = {int(r[0]): vp_poses(r) for r in rec.get("VP", [])}

@@ -1545,6 +1545,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         print(f"[render] views (change {backdrop['change']}): " + "; ".join(
             f"{v.id} {v.mode} az {v.azimuth:.0f} el {v.elevation:.0f} d {v.distance:.2f} m hfov {v.hfov:.0f} ({v.attempts} draws)"
             for v in drawn) + (f"; warning: no draw passed every rule for {fell}" if fell else ""), flush=True)
+        for v in drawn:
+            if v.broken:  # a fixed view the spec placed: warned, recorded in VW, never moved
+                print(f"[render] warning: fixed view {v.id} at {v.position} breaks the view rules {list(v.broken)}; kept where the "
+                      f"spec puts it", flush=True)
 
     def view_records() -> List[tuple]:
         """VS and every camera's VW for this change (trainer/contract/SESSION_FORMAT.md); none without views."""

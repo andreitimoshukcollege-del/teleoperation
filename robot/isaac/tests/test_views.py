@@ -289,7 +289,7 @@ def test_vw_vs_and_vp_encode_as_documented_and_read_back(spec, geo):
     f = views.vw_fields(spec, v, 2, 1.23456)
     line = "|".join(field(x) for x in ("VW", *f))
     parts = line.split("|")
-    assert parts[0] == "VW" and len(parts) == 23
+    assert parts[0] == "VW" and len(parts) == 24 and parts[23] == ""  # a drawn view breaks no rule
     r = views.parse_vw(parts[1:])
     assert r["camera"] == "view0" and r["change"] == 2 and r["width"] == 640 and r["height"] == 360
     assert r["streams"] == ["rgb", "depth", "mask"] and r["mode"] == v.mode and r["gain"] == 1.235
@@ -326,8 +326,8 @@ def test_the_shelf_stays_out_of_every_views_sight_in_every_scene():
     from teleop_isaac.world import RESIZE_SCALES, IsaacWorld
     for path in SCENES:
         s = scene_module.load(path)
-        for spec_path in (RECON, RECON_720):
-            sp = views.load(spec_path, count=views.MAX_COUNT)
+        for spec_path in (RECON, RECON_720, os.path.join(ROOT, "views", "fixed-example.json")):
+            sp = views.load(spec_path, count=-1 if "fixed" in spec_path else views.MAX_COUNT)
             sight = [views.sight(sp)]
             world = IsaacWorld(s, "/robot")
             for i in range(len(s.objects)):
@@ -363,3 +363,94 @@ def test_the_renderers_views_wiring_is_opt_in_and_records_what_it_drew():
     block = run[run.index("view_sensors = []"):run.index("app_utils.play(commit=True)")]
     assert "CameraFeed" not in block and "specs.append" not in block
     assert "encode_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix=\"encode\") if view_spec is not None else None" in run
+
+
+# --- fixed views -------------------------------------------------------------------------------------------------------
+
+FIXED = os.path.join(ROOT, "views", "fixed-example.json")
+
+
+def _fixed_slot(position=(1.05, 0.62, 0.30), look=(0.26, 0.0, -0.13), **extra):
+    return {"width": 640, "height": 360, "fixed": {"position": list(position), "lookAt": list(look), "hfovDeg": 75, **extra}}
+
+
+def test_the_fixed_example_puts_two_cameras_exactly_where_it_says_every_take(mixed):
+    s = views.load(FIXED)
+    geo = views.geometry(s, mixed)
+    a = views.draw(s, geo, 1, 0)
+    assert a == views.draw(s, geo, 99, 7)  # no jitter: the same every take, whatever the seed
+    assert [v.mode for v in a] == ["fixed", "fixed"] and all(v.motion is None and v.attempts == 0 for v in a)
+    assert a[0].centre_pose()[0] == (1.05, 0.62, 0.30) and a[1].centre_pose()[0] == (1.05, -0.62, 0.30)
+    assert all(v.broken == () for v in a)  # sensible spots: they pass every rule
+    for v in a:
+        p, q = v.pose_at(12.0)
+        u, w, _ = views.project((0.26, 0.0, -0.13), p, q, v.intrinsics)
+        assert abs(u - 320) < 1e-6 and abs(w - 180) < 1e-6
+        assert abs(views.place(v.target, v.azimuth, v.elevation, v.distance)[0] - p[0]) < 1e-5  # the derived draw fields agree
+
+
+def test_a_fixed_camera_that_breaks_the_rules_is_kept_and_warned_not_moved(mixed):
+    d = doc()
+    d["slots"] = [_fixed_slot(position=(-0.10, 0.0, 0.0))]  # inside the robot's chassis
+    d["count"] = 1
+    s = views.parse(d)
+    v = views.draw(s, views.geometry(s, mixed), 3, 1)[0]
+    assert v.centre_pose()[0] == (-0.10, 0.0, 0.0) and v.mode == "fixed"
+    assert "body" in v.broken and v.attempts == 0
+    parts = "|".join(field(x) for x in ("VW", *views.vw_fields(s, v, 1))).split("|")
+    r = views.parse_vw(parts[1:])
+    assert r["mode"] == "fixed" and "body" in r["broken"] and r["attempts"] == 0
+
+
+def test_a_fixed_cameras_jitter_is_small_seeded_and_per_take(mixed):
+    d = doc()
+    d["slots"] = [_fixed_slot(jitter={"translationM": 0.01, "rotationDeg": 1.0})]
+    d["count"] = 1
+    s = views.parse(d)
+    geo = views.geometry(s, mixed)
+    a, b = views.draw(s, geo, 3, 1)[0], views.draw(s, geo, 3, 2)[0]
+    assert a == views.draw(s, geo, 3, 1)[0] and a != b
+    for v in (a, b):
+        p = v.centre_pose()[0]
+        assert max(abs(x - y) for x, y in zip(p, (1.05, 0.62, 0.30))) <= 0.01 + 1e-9
+        assert abs(v.roll) <= 1.0
+        nominal = views.unit([t - c for t, c in zip((0.26, 0.0, -0.13), (1.05, 0.62, 0.30))])
+        assert math.degrees(math.acos(min(1.0, sum(x * y for x, y in zip(v.sight(), nominal))))) < 1.5
+
+
+def test_a_spec_may_mix_fixed_and_drawn_slots(mixed):
+    d = doc()
+    d["slots"] = [_fixed_slot(), {"width": 640, "height": 360, "hfovDeg": [60, 90]}]
+    s = views.parse(d)
+    geo = views.geometry(s, mixed)
+    for seed in range(1, 40):
+        fixed, drawn = views.draw(s, geo, seed, 0)
+        assert fixed.mode == "fixed" and fixed.centre_pose()[0] == (1.05, 0.62, 0.30)
+        assert drawn.mode in ("static", "moving") and drawn.attempts > 0
+        assert views.broken_rules(s, geo, drawn, [fixed.sight()]) == []  # kept apart from the fixed one
+
+
+@pytest.mark.parametrize("fixed", [
+    {"position": [1.0, 0.5, 0.3], "lookAt": [1.0, 0.5, 0.31], "hfovDeg": 75},    # looks at itself
+    {"position": [1.0, 0.5, 0.3], "lookAt": [0.2, 0, 0], "hfovDeg": 150},        # field of view out of bounds
+    {"position": [1.0, 0.5], "lookAt": [0.2, 0, 0], "hfovDeg": 75},              # not a point
+    {"position": [1.0, 0.5, 0.3], "lookAt": [0.2, 0, 0]},                        # no field of view
+    {"position": [1.0, 0.5, 0.3], "lookAt": [0.2, 0, 0], "hfovDeg": 75, "jitter": {"translationM": 0.2}},  # not small
+    {"position": [1.0, 0.5, 0.3], "lookAt": [0.2, 0, 0], "hfovDeg": 75, "tilt": 3},  # unknown field
+])
+def test_a_bad_fixed_slot_is_refused(fixed):
+    d = doc()
+    d["slots"] = [{"width": 640, "height": 360, "fixed": fixed}]
+    d["count"] = 1
+    with pytest.raises(views.ViewsError):
+        views.parse(d)
+
+
+def test_a_fixed_slot_cannot_repeat_and_its_sight_covers_it():
+    with pytest.raises(views.ViewsError):
+        views.load(FIXED, count=3)
+    d = doc()
+    d["slots"] = [_fixed_slot(position=(3.0, 3.0, 1.0))]
+    d["count"] = 1
+    centre, reach = views.sight(views.parse(d))
+    assert math.dist(centre, (3.0, 3.0, 1.0)) + 6.0 < reach

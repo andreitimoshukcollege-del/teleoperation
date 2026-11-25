@@ -10,6 +10,11 @@ index:
 - a roll of up to ``rollDeg`` about the optical axis, and a horizontal field of view in its slot's ``hfovDeg``;
 - static for the take, or with probability ``moving.share`` moving on a closed loop around that place (:func:`pose_at`).
 
+A slot with ``fixed`` (``position``, ``lookAt``, ``hfovDeg``, optional ``rollDeg`` and ``jitter``) is not drawn: the camera stands
+where the spec puts it, every take the same unless the jitter moves it a little, and is always static (mode ``fixed``). The
+rules are still run on it, but only to warn: what it breaks is logged and recorded (``VW``'s ``broken``), and it is never
+moved. A spec may mix fixed and drawn slots; a drawn view keeps its separation from the fixed ones before it.
+
 A candidate is drawn again until :func:`check` passes it: outside the robot's body and the arm's reach, not just above a
 surface, inside the room, the workspace in frame, unoccluded and big enough, and far enough in direction from the views drawn
 before it. A moving view must pass at every phase of its loop.
@@ -46,10 +51,22 @@ class ViewsError(ValueError):
 # --- the spec ----------------------------------------------------------------------------------------------------------
 
 @dataclass(frozen=True)
+class Fixed:
+    """A camera the spec places itself (docs/adr/0038 "V, views", fixed views): never moved by the rules, which only warn."""
+    position: Vec
+    look_at: Vec
+    hfov: float
+    roll: float
+    jitter_m: float = 0.0  # each take: the position moved by up to this along each axis (default none)
+    jitter_deg: float = 0.0  # and the line of sight turned by up to this in azimuth and elevation, and the roll
+
+
+@dataclass(frozen=True)
 class Slot:
     width: int
     height: int
     hfov: Tuple[float, float]
+    fixed: Optional[Fixed] = None
 
 
 @dataclass(frozen=True)
@@ -192,9 +209,24 @@ def parse(doc) -> Spec:
         raise ViewsError("views: slots must be a non-empty list")
     slots = []
     for i, s in enumerate(d["slots"]):
-        s = _obj(s, f"slots[{i}]", ("width", "height", "hfovDeg"), ("width", "height", "hfovDeg"))
+        s = _obj(s, f"slots[{i}]", ("width", "height", "hfovDeg", "fixed"),
+                 ("width", "height") if "fixed" in s else ("width", "height", "hfovDeg"))
+        fixed = None
+        if "fixed" in s:
+            w = f"slots[{i}].fixed"
+            f = _obj(s["fixed"], w, ("position", "lookAt", "hfovDeg", "rollDeg", "jitter"), ("position", "lookAt", "hfovDeg"))
+            pos, at = _vec(f["position"], w + ".position"), _vec(f["lookAt"], w + ".lookAt")
+            if math.dist(pos, at) < 0.05:
+                raise ViewsError(f"views: {w} looks at a point less than 5 cm from where it stands")
+            j = _obj(f.get("jitter", {}), w + ".jitter", ("translationM", "rotationDeg"))
+            fixed = Fixed(pos, at, _num(f["hfovDeg"], w + ".hfovDeg", 20.0, 120.0), _num(f.get("rollDeg", 0.0), w + ".rollDeg", -180.0, 180.0),
+                          _num(j.get("translationM", 0.0), w + ".jitter.translationM", 0.0, 0.05),
+                          _num(j.get("rotationDeg", 0.0), w + ".jitter.rotationDeg", 0.0, 5.0))
+        hfov = _range(s["hfovDeg"], f"slots[{i}].hfovDeg", 20.0, 120.0) if "hfovDeg" in s else (fixed.hfov, fixed.hfov)
         slots.append(Slot(_int(s["width"], f"slots[{i}].width", 16, 4096), _int(s["height"], f"slots[{i}].height", 16, 4096),
-                          _range(s["hfovDeg"], f"slots[{i}].hfovDeg", 20.0, 120.0)))
+                          hfov, fixed))
+    if any(sl.fixed is not None for sl in slots) and count > len(slots):
+        raise ViewsError(f"views: count {count} is more than the {len(slots)} slots, and a fixed slot cannot repeat")
     t = _obj(d["target"], "target", ("min", "max"), ("min", "max"))
     t_lo, t_hi = _vec(t["min"], "target.min"), _vec(t["max"], "target.max")
     if any(a > b for a, b in zip(t_lo, t_hi)):
@@ -481,7 +513,9 @@ class View:
     distance: float
     roll: float
     motion: Optional[Motion]
-    attempts: int  # candidates drawn until one passed; FALLBACK when none did
+    attempts: int  # candidates drawn until one passed; FALLBACK when none did; 0 for a fixed view
+    position: Optional[Vec] = None  # a fixed view's place, exactly as the spec gives it (moved by its jitter, if any)
+    broken: Tuple[str, ...] = ()  # the rules a fixed view breaks: warned and recorded, never acted on
 
     @property
     def id(self) -> str:
@@ -489,6 +523,8 @@ class View:
 
     @property
     def mode(self) -> str:
+        if self.position is not None:
+            return "fixed"
         return "moving" if self.motion is not None else "static"
 
     @property
@@ -508,16 +544,18 @@ class View:
                 self.distance + m.distance_amp * math.sin(2 * w * t + p3))
 
     def pose_at(self, t: float = 0.0) -> Tuple[Vec, Quat]:
+        if self.position is not None:
+            return self.centre_pose()
         tgt, az, el, dist = self.params_at(t)
         p = place(tgt, az, el, dist)
         return p, look_at(p, tgt, self.roll)
 
     def centre_pose(self) -> Tuple[Vec, Quat]:
-        p = place(self.target, self.azimuth, self.elevation, self.distance)
+        p = self.position if self.position is not None else place(self.target, self.azimuth, self.elevation, self.distance)
         return p, look_at(p, self.target, self.roll)
 
     def sight(self) -> Vec:
-        p = place(self.target, self.azimuth, self.elevation, self.distance)
+        p = self.position if self.position is not None else place(self.target, self.azimuth, self.elevation, self.distance)
         return unit([t - c for t, c in zip(self.target, p)])
 
 
@@ -562,12 +600,38 @@ def broken_rules(spec: Spec, geo: Geometry, v: View, others: Sequence[Vec] = ())
     return broken
 
 
+def fixed_view(spec: Spec, k: int, seed: int, change: int) -> View:
+    """Slot k's fixed camera for one change: where the spec puts it, moved by its optional jitter (from its own key). Its
+    azimuth, elevation and distance from its look-at point are derived, for the record."""
+    f = spec.slot(k).fixed
+    pos, at, roll = f.position, f.look_at, f.roll
+    if f.jitter_m or f.jitter_deg:
+        r = random.Random(f"teleop-view-fixed:{seed}:{change}:{k}")
+        pos = tuple(round(c + r.uniform(-f.jitter_m, f.jitter_m), 6) for c in pos)
+        d = [a - p for a, p in zip(f.look_at, f.position)]
+        n = math.sqrt(sum(c * c for c in d))
+        az = math.atan2(d[1], d[0]) + math.radians(r.uniform(-f.jitter_deg, f.jitter_deg))
+        el = math.asin(max(-1.0, min(1.0, d[2] / n))) + math.radians(r.uniform(-f.jitter_deg, f.jitter_deg))
+        at = tuple(round(p + n * c, 6) for p, c in zip(pos, (math.cos(el) * math.cos(az), math.cos(el) * math.sin(az), math.sin(el))))
+        roll = round(roll + r.uniform(-f.jitter_deg, f.jitter_deg), 4)
+    d = [p - a for p, a in zip(pos, at)]
+    dist = math.sqrt(sum(c * c for c in d))
+    slot = spec.slot(k)
+    return View(k, slot.width, slot.height, f.hfov, tuple(at), round(math.degrees(math.atan2(d[1], d[0])) % 360.0, 6),
+                round(math.degrees(math.asin(max(-1.0, min(1.0, d[2] / dist)))), 6), round(dist, 6), roll, None, 0,
+                position=tuple(pos))
+
+
 def draw(spec: Spec, geo: Geometry, seed: int, change: int) -> List[View]:
     """Every view camera for one change, in index order, each from its own ``random.Random`` key: a pure function of the
     seed, the change and the camera's index (and the views before it, for the separation rule). Whether a view moves is
     drawn first, from its own key, so the rules (which a moving loop breaks more often) do not change the share."""
     out: List[View] = []
     for k in range(spec.count):
+        if spec.slot(k).fixed is not None:  # placed by the spec: the rules only warn (VW's broken), it is never moved
+            v = fixed_view(spec, k, seed, change)
+            out.append(replace(v, broken=tuple(broken_rules(spec, geo, v, [w.sight() for w in out]))))
+            continue
         moving = spec.moving is not None and random.Random(f"teleop-view-mode:{seed}:{change}:{k}").random() < spec.moving.share
         r = random.Random(f"teleop-view:{seed}:{change}:{k}")
         others = [v.sight() for v in out]
@@ -595,7 +659,11 @@ def sight(spec: Spec) -> Tuple[Vec, float]:
     centre = tuple((a + b) / 2 for a, b in zip(spec.target_lo, spec.target_hi))
     half = math.dist(spec.target_lo, spec.target_hi) / 2
     extra = spec.moving.distance_amp[1] + spec.moving.target_amp[1] if spec.moving is not None else 0.0
-    return centre, spec.far + spec.distance[1] + extra + half + SIGHT_MARGIN_M
+    reach = spec.distance[1] + extra + half
+    for s in spec.slots:
+        if s.fixed is not None:
+            reach = max(reach, math.dist(centre, s.fixed.position) + math.sqrt(3) * s.fixed.jitter_m)
+    return centre, spec.far + reach + SIGHT_MARGIN_M
 
 
 def vs_fields(spec: Spec, seed: int, change: int) -> tuple:
@@ -609,7 +677,8 @@ def vw_fields(spec: Spec, v: View, change: int, gain: float = 1.0) -> tuple:
     motion = [[m.period, m.azimuth_amp, m.elevation_amp, m.distance_amp, m.target_amp, *m.phases]] if m is not None else ""
     return (change, v.id, v.width, v.height, round(i["fx"], 6), round(i["fy"], 6), i["cx"], i["cy"], spec.near, spec.far,
             *[round(c, 7) for c in (*p, *q)], [[s] for s in spec.record], v.mode,
-            [[v.hfov, v.azimuth, v.elevation, v.distance, v.roll, *v.target, v.attempts]], round(gain, 3), motion)
+            [[v.hfov, v.azimuth, v.elevation, v.distance, v.roll, *v.target, v.attempts]], round(gain, 3), motion,
+            [[b] for b in v.broken])
 
 
 def vp_items(poses: Sequence[Tuple[str, Tuple[Vec, Quat]]]) -> List[list]:
@@ -630,4 +699,5 @@ def parse_vw(fields: Sequence[str]) -> Dict:
             "fy": float(f[5]), "cx": float(f[6]), "cy": float(f[7]), "near": float(f[8]), "far": float(f[9]),
             "pose": tuple(float(x) for x in f[10:17]), "streams": f[17].split(";"), "mode": f[18],
             "hfovDeg": draw_[0], "azimuthDeg": draw_[1], "elevationDeg": draw_[2], "distanceM": draw_[3], "rollDeg": draw_[4],
-            "target": tuple(draw_[5:8]), "attempts": int(draw_[8]), "gain": float(f[20]), "motion": motion}
+            "target": tuple(draw_[5:8]), "attempts": int(draw_[8]), "gain": float(f[20]), "motion": motion,
+            "broken": [b for b in f[22].split(";") if b] if len(f) > 22 else []}

@@ -262,8 +262,10 @@ namespace Teleop.Eval.Tests.JointDrive
             int blindPullBacks = 0, objectMoves = 0, turned = 0, intoFixtures = 0, blindTransports = 0, lowBlind = 0, highBlind = 0;
             Span<LinkFrame> frames = stackalloc LinkFrame[5];
             var options = new MixedOptions { AccidentShare = 0, AccidentNearShare = 0 }; // the moves' own law; accidents overlie it (AccidentTests)
-            // 20 layouts: since the 2026-11-24 review the blind goals spread over five bands, and on the crowded bench few end low.
-            for (ulong seed = 1; seed <= 20; seed++)
+            // 40 layouts: since the 2026-11-24 review the blind goals spread over five bands, and on the crowded bench few end low (about
+            // 7-9% of the blind goals end below -10 cm from the base frame over 200 layouts, docs/adr/0038 "M, motion", round 7 merged): 20
+            // layouts held 1-4 of them as the draws fell, short of the bar of 2 with a share that had not changed.
+            for (ulong seed = 1; seed <= 40; seed++)
             {
                 SafetyObject[] objects = LayoutOf(seed);
                 if (!TryMixed(objects, 2000 + seed, out DrivePlan? plan, out _, options)) continue;

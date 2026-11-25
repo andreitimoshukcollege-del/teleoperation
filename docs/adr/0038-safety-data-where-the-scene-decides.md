@@ -1979,3 +1979,143 @@ the servo-path check from the measured pose). **Not yet run on a twin or the rob
   arm still held) in docs/adr/0020's amendment.
 - **Replay pairs** should diverge less: a source and its replay measured differently no longer split into "moved" and "held",
   only into nearer and farther along the same line. Not yet measured on a new batch.
+
+### V, views: random camera viewpoints for scene reconstruction (amendment, 2026-11-25)
+
+**Why.** The user's next step is scene reconstruction on the headset from the robot's camera feeds, and it must hold up
+wherever the cameras are. Decision 5's jitter only nudges the fixed cameras (1.5 cm, 2°). This amendment lets the JetRover twin
+record takes from extra **view cameras**, each at a seeded random viewpoint. Each one records exact colour, metric depth and
+instance masks, and its intrinsics and pose for each take, plus a pose for each frame when it moves. The user approved it on
+2026-11-24: "design it as an ADR 0038 amendment, implement, check on the twin, record a pilot batch; no headset change".
+
+**Opt-in; the default is unchanged byte for byte.**
+- The views come from a spec file, given to the renderer as `--views FILE` (with `--views-count N` to override its count).
+  `just isaac-jetrover-host <scene> <seed> <twin> <detach> <views>` passes it: `views=recon` means `robot/isaac/views/recon.json`.
+- A scene file may carry the same object as an Isaac-only `views` section, which the flag overrides. No shipped scene has one,
+  so no scene sha, rests golden or headset build changes.
+- Without either, the renderer does not run the views code at all: the same cameras, records, sidecars and bytes as before.
+- The views stay out of `CM`. Every reader of `isaac.jlog` (`teleop_lerobot` takes, sidecars and visibility,
+  `appearance_check.py`, `verify_session.py`) keys on `CM`'s camera ids and skips the `VF` parts of other streams. So the safety
+  datasets, the jitter and mask checks and their goldens never see a view. A LeRobot test builds a take with and without views
+  and compares the episodes.
+
+**The cameras** (`robot/isaac/teleop_isaac/views.py`, pure Python; the spec `robot/isaac/views/recon.json`):
+- **Count:** `count` cameras, `view0`, `view1`, ..., default 2. They have no live feed.
+- **Resolution, by slot:** a render product cannot change size during a run, so camera k has `slots[k % len(slots)]`'s size
+  all run.
+  - The shipped spec's slots are both 640×360 (the DaBai's size; its field of view is not published, so the range is a
+    guess).
+  - `recon-720.json` makes the second slot 1280×720 (the Femto Bolt's colour mode, 80° × 51° per Orbbec's documentation).
+- **Field of view:** drawn for each take within the slot's `hfovDeg` range (60-90°), as a pinhole with square pixels and the
+  principal point at the centre. The camera's focal length is set to it, and the aperture is fixed.
+- **Fixed per take:** near 0.05 m, far 6 m, and the same `record` streams and JPEG quality as the scene's cameras.
+
+**Where each camera goes, for each take** (`views.draw`). It is a pure function of `BK`'s seed, the change and the camera's
+index (`random.Random("teleop-view:<seed>:<change>:<k>")`), drawn in index order:
+- **The look-at point:** uniform in a box over the arm's reach, x 0.12-0.45 m, y ±0.30 m, z from the table top (-0.196) to
+  0.0.
+- **The camera's place:** on a shell around that point.
+  - Azimuth 0-360°, measured from +x toward +y.
+  - Elevation 8-80° above the horizon.
+  - Distance 0.6-2.0 m: a low tripod at the table, a tripod or a wall camera, or a ceiling camera.
+- **Roll:** ±4° about the optical axis. The optical axis passes through the look-at point.
+- **Rejection rules.** A candidate is drawn again unless every rule passes (`views.check`):
+  - **Inside something:** the camera is outside the robot body box (the URDF's base_link collisions, x -0.21 to 0.14,
+    y ±0.13, z -0.20 to 0.09, plus 5 cm).
+  - **Inside the arm's reach:** it is outside a 0.55 m sphere about the shoulder (0, 0, 0.035), so the arm never sweeps
+    through a camera and there are no extreme close-ups.
+  - **Over a surface:** it is not over a collidable surface (the table or the bench, 0.10 m wider each way) and lower than
+    0.75 m above its top. Objects stand on the table up to about 0.6 m tall at the file's size.
+  - **The room:** it is between 0.3 m above the floor and 2.6 m above it (a ceiling), and within 2.2 m of the look-at point
+    horizontally (the walls). The room itself is an HDRI at infinity, so nothing else there can hold a camera.
+  - **The workspace in frame:** 25 points cover it, a 5×5 grid over the reach region 5 mm above the table top, plus 3 points
+    over the arm's base.
+    - At least 80% must project inside the image, 2% in from its border.
+    - At least 70% must be unoccluded by the robot body and the surfaces' slabs (a segment test).
+    - Their projected bounding box must fill at least 12% of the image.
+  - **Different from the others:** at least 15° between this camera's line of sight and each earlier camera's in the take.
+  - **After 200 rejections:** the candidate that broke the fewest rules is kept, and its `VW` says so (`attempts` -1). Over
+    2,000 draws of the shipped spec, this never happened (`test_views.py`).
+
+  Behind the robot, low cameras fail on occlusion and the arm sphere, so the azimuths that work are what the robot's body
+  allows, not a hard-coded range.
+- **Static or moving.** Each camera is static for the take with probability 0.7, and moving otherwise (`moving.share` 0.3).
+  - Reconstruction training wants mostly static multi-view, for many viewpoints of one scene state, plus some moving views,
+    for a camera whose pose changes while the scene does.
+  - A moving camera keeps its field of view, roll and resolution for the take. It moves on a closed loop around its drawn
+    place, with period T (8-30 s) and ω = 2π/T:
+    - azimuth + A_az sin(ωt + φ1), with A_az 10-45°;
+    - elevation + A_el sin(ωt + φ2), with A_el up to 10°;
+    - distance + A_r sin(2ωt + φ3), with A_r up to 0.2 m;
+    - the look-at point + A_t (cos(ωt + φ4), sin(ωt + φ4), 0), with A_t up to 5 cm.
+  - The loop is checked against every rule at 48 phases, so any point on it passes.
+  - t is the render frames since the change, divided by the renderer's fps. The pose is a function of the frame, not of the
+    clock.
+
+**Records** (trainer/contract/SESSION_FORMAT.md):
+- `VS` `change` `seed` `sha256` `count`: the views in force from this change. The spec itself is in the take's
+  `isaac/views.json`.
+- `VW`, one per camera per change, also in each session's preamble:
+  - fields `change` `camera` `width` `height` `fx` `fy` `cx` `cy` `near` `far` `x` `y` `z` `qw` `qx` `qy` `qz` `streams`
+    `mode` `draw` `gain` `motion`;
+  - the pose is in the base frame, as in `CM` (a USD camera, looking along −z with +y up). For a moving camera, it is the
+    loop's centre;
+  - `draw` holds `hfovDeg:azimuthDeg:elevationDeg:distanceM:rollDeg:tx:ty:tz:attempts`;
+  - `gain` is the camera's own exposure gain, metered as every other camera's is;
+  - `motion` holds `periodS:azAmpDeg:elAmpDeg:distAmpM:targetAmpM:phi1:phi2:phi3:phi4`, empty for a static camera.
+- `VP` `frame` `stateSensed` `poses`: each moving camera's pose at a recorded frame, `view:x:y:z:qw:qx:qy:qz;...`, written
+  just before the frame's `VF`. Absent when no camera moves.
+- Streams `view<k>.rgb`, `.depth` and `.mask`: the same encodings and mask ids (`ID`) as every other camera.
+
+**Frame association for a moving camera.** Isaac applies a camera's transform one frame sooner than the posed links. So a
+pose set at loop iteration k shows in the image read at iteration k + lag − 1, which is how the wrist camera is posed. A
+frame read at iteration m therefore records the pose of iteration m − lag + 1. `views_check.py` tests this on the twin: table
+depth back-projected through `VP` must land on the table top at p99 under 3 mm, and is reported beside the same through `VP`
+one frame earlier and one frame later.
+
+**In the renderer** (`renderer.py`, only with views):
+- the cameras are made with the others, before the timeline plays;
+- each change draws them after the jitter and before the room settles, so each camera meters its own exposure;
+- a session's preamble waits for the change, as with an appearance section;
+- the shelf stays out of every camera's sight: a view sees no farther than its far plane plus 2.0 + 0.5 m from the
+  look-at box, and the shelf is 14 m away;
+- each frame's streams are encoded in a pool of threads, not one. One thread already spends about 18 ms a frame on the three
+  scene cameras, and a 1280×720 view adds about 24 ms.
+
+**Cost, estimated, not measured.**
+- Two twins with three 640×360 cameras each keep the GPU 63-80% busy. That is about 4 ms of GPU per camera per frame per twin,
+  about 12% of the GPU.
+- A 640×360 view should cost about the same as one of the scene's cameras, and a 1280×720 view about four times as much.
+- On the CPU, a 720p view also costs the render thread about 3-6 ms to read and convert its three images.
+- So the default is **2 views at 640×360, on one twin**. Two twins with views would need about 1 view each. 720p is opt-in
+  (`views=recon-720`).
+- Disk: each 640×360 view adds about a third of a twin's present 10 GB an hour.
+- Measured: see the twin check below, once it has run.
+
+**Checks without Isaac** (`robot/isaac/tests/test_views.py`):
+- the spec reads, and a bad one is refused;
+- the draws are deterministic and bounded, and each change and camera gets its own;
+- more cameras leave the earlier ones' draws unchanged;
+- each rejection rule refuses its case, and every accepted draw passes every rule at every phase;
+- a moving loop is continuous and closes;
+- the optical axis passes through the look-at point;
+- the records encode as documented;
+- the renderer's arguments and the shelf's sight hold with views;
+- the shipped scenes have no `views` section.
+
+`robot/lerobot/tests` builds a take with view streams and `VS`/`VW`/`VP` records: its episode is the same as without them.
+
+**The twin check** (needs the coordinator's slot and the user's go):
+1. **An fps sweep on one twin, the other stopped.** For each of `views` none, `recon` with `--views-count` 1, 2 and 3, and
+   `recon-720`: about 2 minutes of `isaac-jetrover-host jetrover-mixed auto 0 true <views>` with a short take recording.
+   Then read `[render] N fps` and `render`/`read` ms from its 5 s reports. Then, with the chosen default, twin 0 with views
+   beside twin 1 without.
+2. **A short views batch.** 4-8 `mixed` takes with `views=recon` on one twin (`build=false`), then on the GPU machine
+   `views_check.py <takes> --sheet /tmp/views-sheet.jpg`. It passes with:
+   - every view's table depth through `VW`/`VP` under 3 mm at p99;
+   - for moving views, the frame offset of 0 better than ±1;
+   - every recorded frame carrying every view's streams;
+   - `VW` equal to the draws.
+3. **What to look at:** the contact sheet. The cameras sit all round the table at varied heights and distances, the table and
+   arm fill a good part of each frame, and none sits inside or right against the robot, the table or an object. Moving
+   views pan smoothly in the videos.

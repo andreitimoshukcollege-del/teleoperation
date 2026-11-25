@@ -342,3 +342,41 @@ def test_visibility_has_rows_for_each_view_at_its_own_pose(scenarios, geometry):
             assert r["expected_px"] == 0 and r["in_frustum"] is False
         else:
             assert r["expected_px"] == 100 and r["in_frustum"] is True
+
+
+def test_with_lerobot_the_three_cameras_videos_are_the_same_bytes_and_the_views_read_back(scenarios, tmp_path):
+    pytest.importorskip("lerobot")
+    from lerobot.datasets import LeRobotDataset
+    from teleop_lerobot.writer import SAFETY_CRF, SAFETY_PRESET, LeRobotWriter
+
+    paths = [views_take(scenarios), views_take(scenarios, name="20261125T100100Z-take002", at_s=10)]
+    off, on = str(tmp_path / "off" / "jetrover_w"), str(tmp_path / "on" / "jetrover_w")
+    writer = lambda: LeRobotWriter(crf=SAFETY_CRF, preset=SAFETY_PRESET)  # noqa: E731
+    safety.build(writer(), off, [read_take(p) for p in paths], log=lambda m: None)
+    safety.build(writer(), on, [read_take(p, views=True) for p in paths], log=lambda m: None, options=ON)
+    videos = lambda root: sorted(os.path.relpath(os.path.join(d, n), root) for d, _, ns in os.walk(root)  # noqa: E731
+                                 for n in ns if n.endswith(".mp4"))
+    assert videos(off) and set(videos(off)) < set(videos(on))
+    for rel in videos(off):
+        assert open(os.path.join(off, rel), "rb").read() == open(os.path.join(on, rel), "rb").read(), rel
+    assert {r.split(os.sep)[1] for r in set(videos(on)) - set(videos(off))} == {"observation.images.view0",
+                                                                                "observation.images.view1"}
+    ds = LeRobotDataset("local/jetrover-isaac-safety_jetrover_w", root=on)
+    assert ds.meta.features["observation.images.view1"]["shape"] == [36, 64, 3] or \
+        tuple(ds.meta.features["observation.images.view1"]["shape"]) == (36, 64, 3)
+    item = ds[3]
+    assert tuple(item["observation.images.view0"].shape) == (3, 36, 64)
+    assert tuple(item["observation.images.front"].shape) == (3, 48, 64)
+    diffs = {d.split(":")[0] for d in safety.compare_datasets(on, off)}
+    assert diffs <= {os.path.join("meta", n) for n in ("info.json", "stats.json")} | {
+        os.path.join("meta", "teleop", n) for n in ("report.json", "scenes.jsonl", "visibility.parquet")} | {
+        d for d in diffs if d.startswith(os.path.join("meta", "episodes"))}, diffs
+
+
+REAL = os.environ.get("TELEOP_VIEWS_DATASET")  # a dataset built --views --depth-masks from real twin takes, on the GPU machine
+
+
+@pytest.mark.skipif(not REAL, reason="set TELEOP_VIEWS_DATASET to a safety dataset built from real takes with both options")
+def test_a_real_views_dataset_passes_the_projection_check():
+    result = D.projection_check(REAL, sidecars.GEOMETRY_DIR)
+    assert result["problems"] == [] and any(name.startswith("view") for name in result["cameras"])

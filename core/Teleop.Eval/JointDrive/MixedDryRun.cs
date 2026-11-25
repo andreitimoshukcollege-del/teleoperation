@@ -650,6 +650,9 @@ namespace Teleop.Eval.JointDrive
         internal sealed class LagTally
         {
             public int Takes, Planned, Onsets, AccidentOnsets, Records, ContactRecords, Accidents, AccidentContacts, FreeAccidents, Placed, PlacedContacts;
+            public int Events, AccidentEvents; // the onsets as contact events (ContactEvents), as the twin's physics makes them
+            public readonly List<double> EventTool = new List<double>();
+            public readonly Dictionary<string, int[]> EventsByKind = new Dictionary<string, int[]>(); // accident kind: events begun in its spans
             public readonly Dictionary<string, int[]> PlacedByKind = new Dictionary<string, int[]>();
             public readonly List<double> Tool = new List<double>(), Point = new List<double>();
             public readonly Dictionary<string, int> Links = new Dictionary<string, int>();
@@ -666,6 +669,10 @@ namespace Teleop.Eval.JointDrive
                 Console.WriteLine(FormattableString.Invariant($"    of the accidents, placed near an object {Placed}, with a contact {PlacedContacts}; by kind (placed, with a contact): ") +
                                   string.Join(", ", PlacedByKind.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value[0]}/{k.Value[1]}")));
                 Console.WriteLine("    tool point cm, 5 cm bins from -20: " + Histogram(Tool.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(Tool) + "); " + Spread(Tool));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"    as contact events (a re-touch within {ContactEvents.MergeSeconds:0.0} s of the object's release the same contact): {Events}, in an accident's span {AccidentEvents} ({100.0 * AccidentEvents / Math.Max(1, Events):0}%); tool point 5 cm bins from -20: ") +
+                    Histogram(EventTool.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(EventTool) + "); " + Spread(EventTool) + "; by accident kind: " +
+                    string.Join(", ", EventsByKind.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value[0]}")));
                 Console.WriteLine("    contact point cm, 5 cm bins from -20: " + Histogram(Point.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(Point) + ")");
                 Console.WriteLine("    touching link: " + Kinds(Links) + "; contact point by link, p50 cm: " +
                                   string.Join(", ", PointByLink.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => k.Key + " " + (k.Value.OrderBy(x => x).ElementAt(k.Value.Count / 2) * 100).ToString("0.0", CultureInfo.InvariantCulture))));
@@ -739,16 +746,33 @@ namespace Teleop.Eval.JointDrive
             var contact = new bool[moves.Count];
             var touching = new bool[objects.Count];
             int onsets = 0;
+            var events = new ContactEvents();
             foreach (TrackPoint p in track)
             {
                 arm.At(p.Pose, p.Gripper);
                 foreach (int i in reach)
                 {
                     bool now = arm.Touching(objects[i], out ArmLink link, out Vector3 point);
+                    if (!now && touching[i]) events.Stop(objects[i].Id, p.At);
                     if (now && !touching[i])
                     {
                         onsets++;
                         double t = plan.ScriptStart + p.At;
+                        if (events.Begin(objects[i].Id, p.At))
+                        {
+                            tally.Events++;
+                            tally.EventTool.Add(arm.Tool.Z);
+                            for (int k = 0; k < moves.Count; k++)
+                            {
+                                if (!ScriptMoveCodec.IsAccident(moves[k].Kind) || t < moves[k].Start || t > moves[k].End + LagSeconds) continue;
+                                tally.AccidentEvents++;
+                                string kn = ScriptMoveCodec.Name(moves[k].Kind) + (moves[k].Part == MovePart.NearAccident ? " placed" : "");
+                                if (!tally.EventsByKind.TryGetValue(kn, out int[]? ek)) tally.EventsByKind[kn] = ek = new int[1];
+                                ek[0]++;
+                                break;
+                            }
+                        }
+
                         int owner = -1;
                         for (int k = 0; k < moves.Count && owner < 0; k++)
                             if (ScriptMoveCodec.IsAccident(moves[k].Kind) && t >= moves[k].Start && t <= moves[k].End + LagSeconds) owner = k;

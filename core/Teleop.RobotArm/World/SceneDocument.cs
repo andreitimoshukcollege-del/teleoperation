@@ -111,6 +111,12 @@ namespace Teleop.RobotArm.World
         /// axis), for a box or a cylinder, movable or fixed. Empty: its file size.
         /// </summary>
         public int[] steps = Array.Empty<int>();
+
+        /// <summary>
+        /// docs/adr/0038 (the scene's third pass): a plank on two supports that a layout lays across the arm's reach as an overhead bar,
+        /// its posts beyond the obstacles' band (<see cref="ScenePoolDocument.overheadShare"/>). False: a plank centred as before.
+        /// </summary>
+        public bool overhead;
     }
 
     /// <summary>How many objects of each kind a pool's layout puts on the table, inclusive (docs/adr/0037 decision 3).</summary>
@@ -240,6 +246,19 @@ namespace Teleop.RobotArm.World
         /// </summary>
         public double rigUnderMin;
         public double rigUnderMax;
+
+        /// <summary>
+        /// docs/adr/0038 (the scene's third pass): the chance, 0-1, that an obstacle is an overhead bar (a plank marked
+        /// <see cref="SceneObjectDocument.overhead"/>), when one is free; drawn before <see cref="rigShare"/>. 0: no bars.
+        /// </summary>
+        public double overheadShare;
+
+        /// <summary>
+        /// docs/adr/0038 (the scene's third pass): a box <c>[xMin, xMax, yMin, yMax, zMin, zMax]</c>, root frame, where the arm stands
+        /// between takes (home, and the tails that end in front). A layout stands nothing that comes within the clearance of it. Empty:
+        /// no such box, as before.
+        /// </summary>
+        public double[] armRest = Array.Empty<double>();
 
         /// <summary>docs/adr/0038: how many distractors a mixed layout stands, inclusive.</summary>
         public int distractorMin;

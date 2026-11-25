@@ -397,6 +397,7 @@ namespace Teleop.Eval.JointDrive
         {
             at = default;
             if (!scene.FitsOnTable(k, x, y, yaw, scale, rest) || !scene.InReach(k, x, y)) return false;
+            RigidTransform there = scene.PoseAt(k, x, y, yaw, scale, rest);
             for (int b = 0; b < objects.Count; b++)
             {
                 if (b == skip) continue;
@@ -404,10 +405,12 @@ namespace Teleop.Eval.JointDrive
                 if (kb < 0) continue;
                 Quaternion q = objects[b].Rotation;
                 int restB = WorldScene.RestOf(q.W, q.X, q.Y, q.Z, out double yawB);
-                if (scene.Overlaps(k, x, y, yaw, kb, objects[b].Center.X, objects[b].Center.Y, yawB, scale, scaleOf?.Invoke(objects[b].Id) ?? 1.0, rest, restB)) return false;
+                // With heights: nothing stands under an overhead bar's footprint otherwise (docs/adr/0038, the scene's third pass).
+                if (scene.OverlapsAtHeights(k, x, y, there.Z, yaw, kb, objects[b].Center.X, objects[b].Center.Y, objects[b].Center.Z, yawB, scale,
+                        scaleOf?.Invoke(objects[b].Id) ?? 1.0, rest, restB)) return false;
             }
 
-            at = scene.PoseAt(k, x, y, yaw, scale, rest);
+            at = there;
             return true;
         }
 
@@ -648,6 +651,7 @@ namespace Teleop.Eval.JointDrive
             int rest = WorldScene.RestOf(o.Rotation.W, o.Rotation.X, o.Rotation.Y, o.Rotation.Z, out double yawNow);
             double turn = yaw ?? yawNow, scale = scaleOf?.Invoke(o.Id) ?? 1.0;
             if (!scene.FitsOnTable(k, x, y, turn, scale, rest) || !scene.InReach(k, x, y)) return false;
+            double z = scene.PoseAt(k, x, y, turn, scale, rest).Z;
             for (int b = 0; b < objects.Count; b++)
             {
                 if (b == i) continue;
@@ -655,7 +659,9 @@ namespace Teleop.Eval.JointDrive
                 if (kb < 0) continue;
                 Quaternion q = objects[b].Rotation;
                 int restB = WorldScene.RestOf(q.W, q.X, q.Y, q.Z, out double yawB);
-                if (scene.Overlaps(k, x, y, turn, kb, objects[b].Center.X, objects[b].Center.Y, yawB, scale, scaleOf?.Invoke(objects[b].Id) ?? 1.0, rest, restB)) return false;
+                // With heights, as Fits.
+                if (scene.OverlapsAtHeights(k, x, y, z, turn, kb, objects[b].Center.X, objects[b].Center.Y, objects[b].Center.Z, yawB, scale,
+                        scaleOf?.Invoke(objects[b].Id) ?? 1.0, rest, restB)) return false;
             }
 
             at = scene.PoseAt(k, x, y, turn, scale, rest);

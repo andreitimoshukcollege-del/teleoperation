@@ -378,6 +378,86 @@ for both columns:
   - how often `OVERLAPS_ARM` refuses a tall rod, a plank or a raised object;
   - the planner's figures with M3's changes.
 
+**The third pass (2026-11-24, branch `work/v2-scene7`): heights.** World-models reviewed the pilot
+`jetrover_20261124_201301_cc0719`. At contact the tool point sat a median 12 cm below the base frame, 80% of contacts between -15
+and -6 cm. Nearly every obstacle stood on the table, about 20 cm below the base frame, so "low means unsafe" passed. They asked for
+raised and tall pieces, overhead bars the arm meets on its way up, no 5 cm band holding more than about 40% of the contacts, and a
+different height mix in the held-out family. Where this differs from the passes above, it replaces them.
+- **Three fields, mixed pools only, all 0 or absent by default.** With them unset a pool draws exactly what it drew before. The bench
+  draws as before: `layout-jetrover-bench.txt`, the rests golden and the bench's pool layouts did not change. Both readers refuse the
+  same 12 new cases (`role`, `pool`) and accept 2 more (vectors.json).
+  - `overhead` (an object's): a plank on two supports that a layout lays across the arm's reach as an overhead bar. The point of its
+    line nearest the base's axis is `workMin`-`workMax` out, within `reachBearing`, and the bar lies square to that bearing. Its centre
+    is anywhere along the line within half its length. Each post's footprint stays at least `reachMax` (0.34 m) from the axis. That
+    is outside the obstacles' band, where the arm at home never reaches as the base turns, so the posts never block the turn. Up to 256
+    tries (`WorldScene.MaxBarTries`), because few spots take a 72 cm bar and its posts. Placement takes a bar as any plank: Isaac's
+    rules, `WorldHost` parking its group, joint-drive's aims. A bar's underside height comes from `rigUnderMin`/`rigUnderMax` and the
+    nearest step of its posts' steps, as any rig's. Both scenes raise `rigUnderMax` to 0.5. The other rigs' supports top out below the
+    old maximum, so their draws are unchanged.
+  - `overheadShare`: the chance that an obstacle is a bar, when one is free. It is drawn before `rigShare`, and the other planks no
+    longer include the bars. A scene with an overhead plank needs `overheadShare` above 0, and the reverse.
+  - `armRest`, `[xMin, xMax, yMin, yMax, zMin, zMax]`: where the arm stands between takes. That is home (the gripper level 28 cm above
+    the table, out to x 0.31) and the tails, which end with the wrist 0-10 cm above the base frame in front. A layout stands nothing
+    within the clearance of the box, and neither does `WorldHost`'s redraw. Both scenes use [0.12, 0.36, -0.06, 0.06, -0.03, 0.17]. So
+    a bar crossing the front stands at least 18 cm above the base frame, and a lower bar is laid at the side. Isaac checks the arm
+    where it really is, so `world.py` takes no rule from the box.
+- **The heights the arm passes through** (the URDF). The shoulder is 3.5 cm above the base frame, and both links are 13 cm. The elbow
+  stays within 13 cm of the axis, between -3 and +16.5 cm. The wrist reaches +30 cm with the arm straight up. joint-drive's wrist
+  targets lie between -10 and +10 cm. Bars over the reach band, 16-30 cm out, therefore meet the forearm, the wrist and the gripper,
+  not the elbow. The elbow reaches only over the robot's own keep-out, where nothing may stand.
+- **The scenes.**
+  - Train: `overhead-bar` (84), a 72×3×2.5 cm box (metal or wood looks), on `bar-post-a`/`-b` (85, 86), 3×3×31 cm, steps -2..1. Its
+    underside is +0.2, +5.2, +11.4 or +19.1 cm from the base frame.
+  - Held out: `overhead-board` (131), a 70×6×1.5 cm board (its own wood looks), on `board-post-a`/`-b` (132, 133), 3.5×3.5×28 cm, steps
+    -1..2. Its underside is +2.8, +8.4, +15.4 or +24.1 cm, none of the train family's heights.
+  - Shares: train `overheadShare` 0.25, `rigShare` 0.3, `tallShare` 0.25, `standShare` 0.45. Held out 0.3, 0.3, 0.2 and 0.5. The scenes
+    have 32 and 29 objects (the cap is 32).
+
+Measured over 2000 layouts (`SceneHeightMeasureTests`, seeds 1-2000). "Before" is 7dd0356's scene file, which the new code draws as
+7dd0356 did. Each obstacle (an object or a plank) adds weight 1 spread evenly over its height span. The span is clipped to the table
+and +30 cm, and the bands are 5 cm from -20 cm, base frame:
+
+| | train before | train after | held-out before | held-out after |
+|---|---|---|---|---|
+| obstacles a layout; found no spot a layout | 1.46; 0.127 | 1.39; 0.211 | 1.46; 0.201 | 1.40; 0.269 |
+| obstacles on the table / on a stand / tall / rigs / bars | 0.467 / 0.162 / 0.178 / 0.193 / 0 | 0.235 / 0.152 / 0.200 / 0.188 / 0.224 | 0.463 / 0.138 / 0.202 / 0.197 / 0 | 0.228 / 0.149 / 0.187 / 0.208 / 0.228 |
+| height spans by band, -20 … +30 cm | .393 .220 .216 .112 .045 .012 .003 0 0 0 | .219 .196 .225 .085 .062 .078 .087 .016 .031 0 | .506 .157 .047 .071 .117 .069 .018 .008 .006 0 | .317 .145 .040 .068 .146 .122 .015 .084 .039 .024 |
+| the same, above the base frame | 0.060 | 0.274 | 0.218 | 0.430 |
+| one height each (plank: underside, tall: middle, else top) | .214 .277 .322 .137 .031 .018 0 0 0 0 | .105 .228 .301 .095 .057 .084 .084 .047 0 0 | .388 .205 .074 .148 .143 .023 .014 .007 0 0 | .263 .145 .060 .128 .167 .087 .011 .081 .057 0 |
+| bars' bearing, 15-degree bins (the nearest point) | | 49 26 24 155 310 58 0 | | 52 48 25 120 325 68 0 |
+| placements the arm at home would meet (1 cm) | 102 in 101 layouts | 0 | 360 in 302 | 0 |
+
+- **What it costs.** The rest box and the bars' spots leave more objects without a spot: 0.211 against 0.127 a layout in the train
+  family. Rigs crossing the front lose the most. Without the box, home would meet 421 placements (train) and 756 (held out).
+- **Planning, with the planner at 7dd0356** (`joint-drive --script mixed --speed 3.8 --seconds 15 --seed 1 --dry-run --layouts 1-200`,
+  contacts by the model over every move). `MixedContactHeightTests` repeats the dry run's onsets and adds the touching link's point:
+  the arm's box that overlaps the object's, its centre clamped into the object's box. Shares in 5 cm bands from -20 cm, base frame:
+
+  | | train before | train after | held-out before | held-out after |
+  |---|---|---|---|---|
+  | planned; onsets | 197; 553 | 191; 403 | 185; 465 | 198; 362 |
+  | the tool point | .119 .329 .277 .181 .063 .031 0 0 | .060 .243 .268 .246 .099 .052 .030 .002 | .170 .277 .202 .129 .114 .080 .022 .002 | .077 .345 .144 .166 .171 .072 .022 .003 |
+  | the touching link's point | .118 .255 .250 .244 .092 .040 .002 0 | .057 .186 .246 .223 .122 .109 .057 0 | .185 .228 .112 .155 .187 .086 .032 .011 | .080 .296 .077 .177 .188 .130 .036 .017 |
+  | the tool point's p10 / p50 / p90, cm | -15.2 / -9.2 / -0.4 | -13.9 / -6.3 / 3.7 | | |
+  | touched kinds | other 203, raised 147, rod 139, plank 36 | rod 143, raised 89, other 68, bar 57, plank 32 | other 179, rod 112, raised 101, plank 34 | rod 127, raised 101, other 78, plank 33, bar 15 |
+
+  No band holds 40% of the contacts in either family, before or after. The largest is 0.268 in the train family and 0.345 in the
+  held-out family. This is a dry run, so the pilot's 80%-in-9-cm is not what these figures measure. The touching links are the pads,
+  the wrist and the gripper. No contact is the elbow's or the upper arm's: the planner aims at the objects' sides and tops, not at a
+  bar from below. These figures leave out the motion workstream's planner changes (aims at every height, accidents at obstacles).
+  Nine train layouts of 200 found no plan, against three before.
+- **Tests.** The vectors; per layout over 400 layouts, nothing in the rest box, and bars square to their bearing with their posts beyond
+  the band; `SceneHeightMeasureTests`: no band above 40%, bars over 15% of the obstacles, no post inside the band, nothing home meets,
+  the two families' bar heights disjoint; the rules golden's pool row with `overheadShare` and `armRest` and each object's overhead
+  flag, read alike by `test_scene.py`; Isaac's model applying every placement of the new first 20 layouts of each scene
+  (`golden/scene-layouts-jetrover-mixed.json`).
+- **Not checked on the twin:** the bars and posts at their steps, which are kinematic and should stand still; whether the twin's tail
+  poses stay inside the rest box (`OVERLAPS_ARM` refusals); the new looks on 72 cm bars; a low bar at the side blocks the arm at home
+  turning towards it.
+- **With the motion workstream's planner** (round 7 merged, `v2-round7`, M below): the dry run's lag-aware contacts put at most 24% of
+  the train scene's contacts in one 5 cm band by the tool point (23% by the contact point) and 29% (25%) of the held-out scene's, the tool
+  point's p10 / p50 / p90 at -14.7 / -6.4 / 4.2 cm and -14.3 / -6.1 / 5.7 cm; 192 and 195 of 200 layouts plan.
+
 ### M, motion
 
 **Built** (branch `work/v2-motion`; docs/adr/0038 decisions 1 and 2, items 1, 6, 7, 8, 10, 11, 23, 24 and 29's caps).
@@ -908,6 +988,136 @@ of aims against free moves are `move_features.py`'s logistic regression on the r
 - **Not run on the twin.** Untested there: the accidents' physics (the arm trails a fast command by about 0.2 s, so a jerk's peak lands
   later and lower than planned), RobotHost's backstop refusing an accident's path into the table or the arm itself, and whether the twin's
   contacts follow the model's third.
+
+**Accidents that cause contacts, and contacts at more heights (2026-11-24, branch `work/v2-motion7`).** World-models' review of the pilot
+`jetrover_20261124_201301_cc0719` (8 groups, 23 takes): only 3 of 21 contact-making moves were accidents, and the gripper met objects at a
+median 12 cm below the base frame (80% from -15 to -6 cm).
+
+- **What the twin did** (`joint-drive --dry-run --scene <file> --audit-take <take>...`, `TakeAudit`: a recorded take's `MV`, `JC`, `FR`,
+  `WO`, `WZ` and `WC` read back against the collision model):
+  - the measured joints trail the command by 0.18 s (p50 over the 23 takes; p90 0.20);
+  - of 71 accident records, the command came within 2 cm of an object by the model in 30, into one in 20, and into one for 0.2 s or longer
+    in 16; a physics contact began in 15 spans (onset to recorded end, plus 0.2 s). Agreement with physics, per accident: the command in an
+    object 13 both / 7 only the model / 2 only physics / 49 neither; in one for the lag, or the follower below, 13 / 3 / 2 / 53; the measured
+    arm 14 / 3 / 1 / 53. RobotHost clamped commands in 18 spans (paths into the table or the arm itself: the clamp ignores objects);
+  - of the 75 physics contact onsets 25 began in an accident's span (33%), 7 of the 23 in the source takes; the source takes' contact-making
+    moves were 14, accidents among them 3 (4 counting the 0.2 s after a span: a slip's contact came 0.05 s after its recorded end);
+  - **why so few:** most accidents never came near an object (the commanded closest p50 27 mm, 9 of the sources' 25 beyond 4 cm), and those
+    that went in briefly did not reach physics: a wrong way into an object for 0.03-0.05 s was 6 times in the command and never in physics.
+    The pilot is small: by the dry run's lag-aware count below (22% of accidents with a contact, 37% of the contact-making moves) 5.5 of
+    the sources' 25 accidents were due a contact, and 4 had one. Speeds capped at 3.84 rad/s and the 2 cm quiet guard cost little (the
+    guard keeps 42 + 22 of 567 accidents in free space). The replays' adds bring contacts of their own, none from accidents.
+- **The follower:** the dry run counts contacts as the twin's arm makes them, on the command 0.10 s late, followed with a time constant of
+  0.08 s at most 3.7 rad/s a joint (fitted to the pilot's measured joints, rms largest-joint error p50 0.029 rad; `--follow` sets it for the
+  audit). A contact belongs to an accident when it begins in its span or 0.2 s after (`MixedDryRun.LagSeconds`).
+- **Aimed accidents** (`MixedOptions.AimAccidents`, `--no-accident-aim`). A jerk, an overshoot, a slip or a rush placed near an object now
+  stops its kind's own distance (jerk 5-12 cm, overshoot 3-10, slip 2-6, rush 3-10) less a depth of 1-3 cm short of where the model first
+  meets the object on the line in toward it, and the accident carries the hand on that far, into the object (`HumanOperator.AccidentReach`).
+  Every accident then holds 0.2-0.4 s before the recovery (`AccidentModel.ReactionLow`), aimed or not, and a jerk's onset is drawn over
+  0.3-0.95 of its part: holding is no sign of a contact. A wrong way is drawn as before. Placed near objects in 0.6 of the main part's
+  would-be blind parts (0.4 before). Of the aimed kinds, 77 of 97 placed accidents reached an object on the follower (current scene, 79%;
+  drawn as before 72 of 130, 55%). With the option off and the old shares, bands and no link aims, the plans are the old ones row for row.
+- **Heights.** The blind goals' tool bands are five (`--tool-bands`): -18 to -13 cm (30%), -13 to -8 (25%), -8 to -3 (20%), -3 to +2 (15%),
+  +2 to +8 (10%). Aims, passes and placed accidents draw their height from the same bands within what the object offers, and objects by how
+  much of them they offer (`SharedHeights`, `--no-shared-heights`). **Link aims** (`LinkAimShare` 0.2, `--link-aims`): an object reaching
+  above -8 cm met first by the wrist or the elbow's links (a pose whose link passes 1.2-4 cm from a point near its top or a plank's
+  underside, approached by a turn round the base or a lift at the shoulder from as far back as an aim starts). The JetRover's links are
+  13 cm from a shoulder 3.5 cm above the base frame, so the upper arm meets only what stands within about 15 cm of the axis and the forearm
+  within about 25 cm: the scene's bars, 16-30 cm out, are met by the wrist and the pads, the forearm seldom. Link aims at 0.4 raised the
+  aim-against-free AUC in the main part (0.719) for a few more wrist contacts.
+- **Replays:** `ReplayAdd`'s spots (an add, a move) are checked with `OverlapsAtHeights`, each object at its own height, so an overhead bar's
+  footprint no longer blocks what stands under it (asked in the round-7 integration).
+
+On layouts 1-200 (seed 1, 3.8 rad/s, 15 s; Release, on the GPU machine). "Before" is the planner at 7dd0356 (measured by the dry run of
+88df7d2, and on the scene of `work/v2-scene7` at 328f600 by this branch with `--no-accident-aim --no-shared-heights --link-aims 0
+--accidents 0.12,0.4 --tool-bands` the old three, which plans exactly as 7dd0356); "after" is 1e6640f. Contacts are lag-aware unless said.
+
+| | Before, current scene | After, current scene | Before, with bars | After, with bars |
+|---|---|---|---|---|
+| Layouts planned | 194 | 198 | 191 | 193 |
+| Accidents (a take) | 567 (2.9) | 701 (3.5) | 515 (2.7) | 658 (3.4) |
+| Contact onsets / in an accident's span | 410 / 169 (41%) | 447 / 209 (47%) | 350 / 116 (33%) | 334 / 137 (41%) |
+| Contact-making records / accidents among them | 328 / 122 (37%) | 336 / 144 (43%) | 282 / 81 (29%) | 274 / 102 (37%) |
+| Accidents farther than 10 cm from every object | 225 (40%) | 310 (44%) | 235 (46%) | 295 (45%) |
+| "An accident" for "a contact", AUC (by the commanded model) | 0.630 (0.585) | 0.641 (0.622) | 0.589 (0.564) | 0.614 (n/a) |
+| Tool point at contact, 5 cm bins from -20 cm | 42 149 97 88 22 11 1 0 | 44 141 138 88 32 4 0 0 | 19 80 93 89 39 18 12 0 | 38 68 94 69 41 15 8 1 |
+| Largest 5 cm band, tool point / touching link's contact point | 36% / 28% | 32% / 28% | 27% / 25% | 28% / 25% |
+| Touching link: gripper, wrist, distal | 83%, 17%, 0 | 81%, 18%, 1% | 79%, 21%, 0 | 73%, 26%, 1% |
+| Aim against free, logistic AUC, whole / main part | 0.660 / 0.677 | 0.696 / 0.727 | 0.644 / 0.677 | 0.670 / 0.710 |
+| Largest arm-joint step a frame, p50 / p90 / p95 / p99 rad | 0.031 / 0.112 / 0.143 / 0.202 | 0.028 / 0.114 / 0.146 / 0.205 | 0.031 / 0.113 / 0.143 / 0.200 | 0.030 / 0.116 / 0.149 / 0.208 |
+| The command moving | 83% of frames | 80% | 83% | 81% |
+| Planned contacts (aims and passes) | 112 in 85 takes | 98 in 76 | 113 in 81 | 130 in 92 |
+
+- **The accident share:** on the dry run a third to four in ten of the contacts now come from accidents on the scene with bars, the
+  scene the next batches run (37% of contact-making records, 41% of onsets), against 29% and 33%. The twin should land near a third with
+  the replays' adds counted; on the current scene the dry run already had 37% before, and has 43%.
+- **The cost:** "an accident" predicts a contact a little better (0.614 against 0.589 with bars), and aims are told from free moves a
+  little better in the main part (0.710 against 0.677): more of the main part's free moves are placed accidents' moves, and on the current
+  scene, whose objects are mostly low, the blind goals now reach higher than aims can (0.727). The per-frame motion is as before.
+- **Heights:** with bars no 5 cm band holds more than 28% of the contacts by the tool point (25% by the contact point), and the wrist meets a
+  quarter of them. The forearm and upper arm stay rare (above).
+- **Checked:** `AimedAccidentTests` (aimed accidents reach their object on the follower, 12 of 14 in 24 layouts; accidents 10 cm from every
+  object stay; the options; link aims met first by the wrist or the elbow's links; blind goals over at least four of the five bands; the take
+  audit on a written take); `MixedTakeTests` (the one-law test over 20 bench layouts: few blind goals end low on the crowded bench now).
+  The four old scripts' tests unchanged.
+- **Not run on the twin.** The twin check: a batch on this branch with the bars' scene, then `--audit-take` over its takes: the share of
+  physics contacts begun in an accident's span and 0.2 s after (about a third over all takes, more in the sources), the aimed accidents'
+  physics contacts (the record `free` with `MV` accident on it near an object), the agreement table above, and `WC` by link and height.
+
+**Round 7 merged (2026-11-25, branch `v2-round7`): the two branches together, and passes that plan.** `work/v2-scene7` (328f600) and
+`work/v2-motion7` (e94723b) merged onto main (745dc1c) with no conflicts: this section and S's third pass are both kept as written, and
+neither branch touched the other's goldens, vectors or scene files, so nothing was regenerated (`jetrover-bench.json` and its Unity copy
+still `cmp` equal).
+
+- **The failing test.** `MixedTakeTests.OnRandomLayouts_TheTimingRulesHold_AndTheOffsetsAreOneContinuousRange` failed after 1e6640f
+  (link aims 0.4 to 0.2): "64 aims, 0 passes" on 24 bench layouts, against its bar of at least one pass. The cause was the planner, not
+  the change and not the test. A pass planned in 2% of its tries (7 of 349 on the bench's layouts 1-60, against 151 of 1399 aims), so a
+  take had about 0.1 passes at either share (16 made at 0.4, 14 at 0.2, the same layouts), and the bar held over 24 layouts only while
+  the draws fell that way; 1e6640f moved the draws. A pass needs its line on both sides of the object, an aim only the part before it.
+  A third of the passes' lines found no first pose (laid nearer the base than about 16 cm or beyond about 36 cm, since a pass's radius
+  is the object's plus or minus up to half its depth and 7 cm), and most of the rest broke within a few centimetres of the object at the
+  one pitch tried (IK, the envelope, a branch flip), short of 3 cm before its closest point or of the gap opening 1 cm after it.
+- **The fix** (`TryObjectMove`, `Line`, `PassUsable`). A pass's line tries up to three of the pitches that reach its first point,
+  nearest the middle first, until one is usable on both sides (the checks made of it later, without their draws); when none is, the
+  same distance on the object's other side (through a movable object or beside a fixture as before, only mirrored). Aims plan exactly
+  as before: one pitch, the same line, no new draws. The planning report counts the passes' own tries and misses. The test is unchanged:
+  its assumption, passes among the object moves (the bar above), is the design's.
+  With it the test plans 61 aims and 4 passes on its 24 layouts.
+- **A second test, whose sample was too small.** After the fix `AimsAndPassesMoveAsFreeMovesDo_AndEveryKindFollowsOneLawAfterIt` found
+  1 of 56 blind goals ending below 8 cm above the table on its 20 bench layouts, against its bar of 2 (4 of 73 at e07ef1b). The share did
+  not fall: over the bench's layouts 1-200, 46 of 650 blind goals (7.1%) ended below -10 cm from the base frame at e07ef1b and 57 of 619
+  (9.2%) after the fix. 20 layouts hold about three such ends, so the bar sat on the draws. The test now runs 40 layouts with the same bar
+  (6 of 119 end low, 102 high).
+- **Measured** (layouts 1-200, seed 1, 3.8 rad/s, 15 s, Release on the GPU machine; lag-aware contacts on the follower). "Merged" is
+  e07ef1b, which reproduces the motion section's "after, with bars" column row for row; "fixed" is 87f0d90.
+
+| | Train scene, merged | Train, fixed | Held out, merged | Held out, fixed | Bench, merged | Bench, fixed |
+|---|---|---|---|---|---|---|
+| Layouts planned | 193 | 192 | 192 | 195 | 198 | 196 |
+| Plan time p50 / p90, s | 0.08 / 0.18 | 0.08 / 0.22 | 0.06 / 0.18 | 0.08 / 0.24 | 0.21 / 0.35 | 0.22 / 0.37 |
+| Aims / passes (passes a take) | 231 / 30 (0.16) | 230 / 40 (0.21) | 187 / 25 (0.13) | 183 / 35 (0.18) | 2.7 / 0.1 a take, 22 passes | 2.5 / 0.3 a take, 50 passes |
+| Accidents (a take) | 658 (3.4) | 630 (3.3) | 722 (3.8) | 719 (3.7) | | |
+| Contact onsets / in an accident's span | 334 / 137 (41%) | 358 / 138 (39%) | 295 / 133 (45%) | 346 / 148 (43%) | | |
+| Contact-making records / accidents among them | 274 / 102 (37%) | 300 / 103 (34%) | 248 / 99 (40%) | 290 / 111 (38%) | | |
+| Aimed accidents placed near an object / with a contact | 113 / 73 | 95 / 72 | 112 / 73 | 118 / 83 | | |
+| Accidents farther than 10 cm from every object | 295 (45%) | 299 (47%) | 331 (46%) | 326 (45%) | | |
+| Tool point at contact, 5 cm bins from -20 cm | 38 68 94 69 41 15 8 1 | 30 87 82 83 42 17 16 1 | 28 79 51 64 38 29 4 2 | 29 100 53 61 57 37 6 3 | | |
+| Largest 5 cm band, tool point / contact point | 28% / 25% | 24% / 23% | 27% / 24% | 29% / 25% | | |
+| Tool point p10 / p50 / p90, cm | -15.3 / -7.0 / 3.7 | -14.7 / -6.4 / 4.2 | -14.7 / -6.4 / 5.7 | -14.3 / -6.1 / 5.7 | | |
+| Touching link: gripper, wrist, distal | 73%, 26%, 1% | 77%, 23%, 0 | 62%, 37%, 1% | 64%, 36%, 0 | | |
+| Planned contacts (aims and passes) | 130 in 92 takes | 136 in 93 | 96 in 69 | 106 in 75 | 252 in 147 | 249 in 154 |
+| Aim against free, logistic AUC, whole / main part | 0.670 / 0.710 | 0.665 / 0.700 | 0.695 / 0.757 | 0.676 / 0.724 | | |
+| Largest arm-joint step a frame, p50 / p90 / p99 rad | 0.030 / 0.116 / 0.208 | 0.029 / 0.115 / 0.208 | 0.028 / 0.115 / 0.208 | 0.029 / 0.116 / 0.208 | | |
+
+- **Against the review's asks:** accidents make a third or more of the contacts on both scenes (34-38% of the contact-making records,
+  39-43% of the onsets); no 5 cm band holds more than 29% of the contacts by the tool point or 25% by the contact point; the held-out
+  scene's heights differ (the wrist meets 36% of its contacts against 23%, 94 of 346 contacts from 0 to +10 cm against 59 of 358). By the model over every move
+  (not lag-aware) the largest band is 23% on the train scene and 31% on the held-out one (120 of 391), under the 40% bar.
+- **What the fix costs:** passes are still fewer than their 0.45 share of the draws: on the mixed scenes the object moves beside the
+  robot turn passes into aims, and staging to a pass's start ("move there") now refuses the most passes. Planning a pass tries more
+  lines, so plan times rise a little (p90 0.22 against 0.18 s on the train scene). One train layout more and three held-out layouts
+  fewer find no plan. Aims are told from free moves slightly less well (0.700 against 0.710 in the main part).
+- **Not run on the twin.** The twin check is the motion section's above, on this branch.
 
 ### C, clearance and contacts
 

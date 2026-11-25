@@ -109,7 +109,7 @@ namespace Teleop.Eval.JointDrive
         /// it): low, mid and high, as aims meet objects (docs/adr/0038 "M, motion", the 2026-11-23 review: every blind goal low had the
         /// path's height telling a take that hits from one that does not; aims and free moves share one height distribution).
         /// </summary>
-        public static float[] DefaultToolBands() => new[] { -0.180f, -0.120f, 0.60f, -0.120f, -0.070f, 0.28f, -0.070f, 0.020f, 0.12f };
+        public static float[] DefaultToolBands() => new[] { -0.180f, -0.130f, 0.30f, -0.130f, -0.080f, 0.25f, -0.080f, -0.030f, 0.20f, -0.030f, 0.020f, 0.15f, 0.020f, 0.080f, 0.10f };
 
         /// <summary>The speed caps (docs/adr/0038 decision 1, item 29): <see cref="DefaultCaps"/> unless told otherwise; null for none.</summary>
         public MotionCaps? Caps { get; set; } = DefaultCaps();
@@ -152,9 +152,32 @@ namespace Teleop.Eval.JointDrive
         /// On top of <see cref="AccidentShare"/>, the share of the main part's would-be layout-blind parts that are a move to a point near an object (a few cm off
         /// its surface, at a height it stands over) with an accident in it (drawn from the accidents' own generator too; when none plans, a
         /// layout-blind part carries it): accidents placed near objects, so about a third of the contacts come from accidents (docs/adr/0038
-        /// "M, motion"). Recorded as a <c>free</c> move with its accident.
+        /// "M, motion"). Recorded as a <c>free</c> move with its accident. 0.6 since the 2026-11-24 review (0.4 before): on the twin, replays'
+        /// adds bring contacts of their own, none from accidents.
         /// </summary>
-        public double AccidentNearShare { get; set; } = 0.4;
+        public double AccidentNearShare { get; set; } = 0.6;
+
+        /// <summary>
+        /// Whether the accidents placed near objects are aimed at them (docs/adr/0038 "M, motion", the 2026-11-24 review): a jerk, an overshoot, a
+        /// slip or a rush carries the hand from a kind's own distance short of the object into it, 1-3 cm past where the model first meets it;
+        /// and every accident reacts (<see cref="AccidentModel.ReactionLow"/>). Off: as before.
+        /// </summary>
+        public bool AimAccidents { get; set; } = true;
+
+        /// <summary>
+        /// Whether aims, passes and the accidents placed near objects draw the height they meet an object at from the layout-blind goals'
+        /// <see cref="BlindReach.ToolBands"/> (within what the object offers), and pick objects by how much of that distribution they offer
+        /// (docs/adr/0038 "M, motion", the 2026-11-24 review: one height distribution for aimed and free moves). Off: uniform over the object's
+        /// height, objects by that height to the power 1.5, as before.
+        /// </summary>
+        public bool SharedHeights { get; set; } = true;
+
+        /// <summary>
+        /// The share of object moves at an object reaching above <see cref="MixedTake.HighPointZ"/> (a tall one's upper part, a raised one, an
+        /// overhead bar) that are <b>link aims</b> (docs/adr/0038 "M, motion", the 2026-11-24 review): the elbow's two links or the wrist, not the
+        /// pads, meets it near its top or a bar's underside. Recorded as an <c>aim</c>. 0: none.
+        /// </summary>
+        public double LinkAimShare { get; set; } = 0.2;
 
         /// <summary>The accidents' kinds, in proportion: jerk, overshoot, wrong way, slip, rush (<see cref="AccidentKinds"/>).</summary>
         public double[] AccidentWeights { get; set; } = { 1, 1, 1, 1, 1 };
@@ -168,6 +191,7 @@ namespace Teleop.Eval.JointDrive
         /// <summary>Throws when the options make no sense together.</summary>
         public void Validate()
         {
+            if (!(LinkAimShare >= 0 && LinkAimShare <= 1)) throw new ArgumentException($"the link aims' share must be in [0, 1], not {LinkAimShare}");
             if (!(AccidentShare >= 0 && AccidentShare <= 1) || !(AccidentNearShare >= 0 && AccidentNearShare <= 1))
                 throw new ArgumentException($"the accident shares must be in [0, 1], not {AccidentShare} and {AccidentNearShare}");
             if (AccidentWeights == null || AccidentWeights.Length != AccidentKinds.Length || AccidentWeights.Any(w => !(w >= 0)) || (!NoAccidents && !(AccidentWeights.Sum() > 0)))
@@ -371,6 +395,9 @@ namespace Teleop.Eval.JointDrive
         private readonly int[] _objectMisses = new int[7];
 
         private int _objectTries, _objectMoves;
+        private readonly int[] _passMisses = new int[7]; // the same, of the passes alone (docs/adr/0038 "M, motion", round 7)
+        private int _passTries, _passMoves, _passesTurnedAims;
+        private bool _tryingPass;
         private readonly int[] _lineBreaks = new int[6]; // diagnostics: no seed, then a walk's break: IK, envelope, model, branch flip, over the base
         private readonly Dictionary<int, int> _missesInARow = new Dictionary<int, int>();
 
@@ -379,7 +406,8 @@ namespace Teleop.Eval.JointDrive
         {
             string counts = FormattableString.Invariant(
                 $"object moves {_objectMoves} of {_objectTries} tried (missed: too low {_objectMisses[0]}, no line {_objectMisses[1]}, no end {_objectMisses[2]}, no start {_objectMisses[3]}, move there {_objectMisses[4]}, approach {_objectMisses[5]}, sweep {_objectMisses[6]}; ") +
-                FormattableString.Invariant($"lines: no seed {_lineBreaks[0]}, walks broken by IK {_lineBreaks[1]}, envelope {_lineBreaks[2]}, model {_lineBreaks[3]}, flip {_lineBreaks[4]}, base {_lineBreaks[5]})");
+                FormattableString.Invariant($"lines: no seed {_lineBreaks[0]}, walks broken by IK {_lineBreaks[1]}, envelope {_lineBreaks[2]}, model {_lineBreaks[3]}, flip {_lineBreaks[4]}, base {_lineBreaks[5]}); ") +
+                FormattableString.Invariant($"passes {_passMoves} of {_passTries} tried ({_passesTurnedAims} more made aims beside the robot; missed: no line {_passMisses[1]}, start {_passMisses[6]}, move there {_passMisses[4]}, approach {_passMisses[5]})");
             var objects = new List<string>();
             foreach (KeyValuePair<int, int> kv in _missesInARow)
             {
@@ -388,7 +416,8 @@ namespace Teleop.Eval.JointDrive
                     $"{o.Id} r {new Vector2(o.Center.X, o.Center.Y).Length():0.00} az {MathF.Atan2(o.Center.Y, o.Center.X) * 180 / MathF.PI:0} h {(o.Max.Z - o.Min.Z) * 100:0}cm{(o.Movable ? "" : " fixed")} misses {kv.Value}"));
             }
 
-            return counts + "; objects: " + string.Join(", ", objects) + (_options.NoAccidents ? "" : "; " + AccidentReport());
+            return counts + "; objects: " + string.Join(", ", objects) + (_options.LinkAimShare > 0 ? $"; link aims {_linkMade} of {_linkTried} (first met by proximal {_linkLinks[1]}, distal {_linkLinks[2]}, wrist {_linkLinks[3]}; missed {string.Join(" ", _linkWhy)})" : "") +
+                   (_options.NoAccidents ? "" : "; " + AccidentReport());
         }
 
         /// <summary>The accidents made, and those drawn that no try could make (the move made without one), by kind.</summary>
@@ -430,6 +459,7 @@ namespace Teleop.Eval.JointDrive
         private bool Miss(int why)
         {
             _objectMisses[why]++;
+            if (_tryingPass) _passMisses[why]++;
             return false;
         }
 
@@ -515,6 +545,7 @@ namespace Teleop.Eval.JointDrive
             hand.GuardBefore = options.QuietStartSeconds;
             // An accident's ticks keep to the arm's own limits: the servos ramp at the commanded speed, which joint-drive's --speed sets.
             hand.AccidentCaps = AccidentModel.CapsFor(options.Caps, speed);
+            hand.AccidentReactions = options.AimAccidents && !options.NoAccidents;
             ulong takeSeed = rng.NextUInt64();
             // Where and when accidents come is drawn from a generator of its own (docs/adr/0038 "M, motion"), seeded from the take's.
             var take = new MixedTake(profile, model, envelope, objects, options, hand, t, new SeededRng(takeSeed), new SeededRng(takeSeed ^ 0xA5C1_DE47_5EED_0001UL));
@@ -911,13 +942,21 @@ namespace Teleop.Eval.JointDrive
                 targets.Add(i);
                 // Drawn by how much of its height the arm meets it over (to the power 1.5: low heights are where every object is), so contacts
                 // spread over every height objects stand at, not one height (docs/adr/0038 "M, motion").
-                weights.Add(MathF.Pow(MathF.Max(0.03f, zHi - zLo), 1.5f));
+                // With shared heights, by how much of the blind goals' height distribution it offers, to the same power.
+                weights.Add(_options.SharedHeights ? MathF.Pow(MathF.Max(0.02f, BandMass(zLo, zHi)), 1.5f) : MathF.Pow(MathF.Max(0.03f, zHi - zLo), 1.5f));
             }
 
             if (targets.Count == 0) return false;
             for (int attempt = 0; attempt < 14; attempt++)
             {
                 int oi = targets[Pick(weights)];
+                // A link aim at what reaches high (docs/adr/0038 "M, motion", the 2026-11-24 review); else, or when none plans, an aim or a pass.
+                if (_options.LinkAimShare > 0 && _objects[oi].Max.Z >= HighPointZ && Draw.Chance(ref _rng, _options.LinkAimShare) && TryLinkAim(oi, accident))
+                {
+                    _missesInARow[oi] = 0;
+                    return true;
+                }
+
                 ScriptMoveKind kind = Draw.Chance(ref _rng, _options.PassShare) ? ScriptMoveKind.Pass : ScriptMoveKind.Aim;
                 if (TryObjectMove(oi, kind, accident))
                 {
@@ -939,10 +978,15 @@ namespace Teleop.Eval.JointDrive
         }
 
         /// <summary>
-        /// An accident placed near an object (docs/adr/0038 "M, motion", <see cref="MixedOptions.AccidentNearShare"/>): a move to a point 1-6 cm
-        /// off an object's surface (toward the base, within 50 degrees of it, at a height drawn over the object's own as an aim's is), the wrist
+        /// An accident placed near an object (docs/adr/0038 "M, motion", <see cref="MixedOptions.AccidentNearShare"/>): a move to a point off an
+        /// object's surface (toward the base, within 50 degrees of it, at a height drawn over the object's own as an aim's is), the wrist
         /// pitched for that height, with an accident of <paramref name="kind"/> in it, checked as a layout-blind move is (the robot's own model,
-        /// the walls but in the accident); then the law every move follows. False when no try plans.
+        /// the walls but in the accident); then the law every move follows. False when no try plans. With
+        /// <see cref="MixedOptions.AimAccidents"/> (the 2026-11-24 review) a jerk, an overshoot, a slip or a rush is aimed: the move stops its
+        /// kind's own distance (<see cref="AimedReach"/>) less a drawn depth short of where the model first meets the object on the line in
+        /// toward it, and the accident carries the hand that distance on, 1-3 cm past that point (no deeper than the model measures), held
+        /// for the reaction before it recovers; the twin's arm, trailing the command by about 0.2 s, gets there too. A wrong way, and every
+        /// accident without the option, comes 1-6 cm off the surface in its own drawn way.
         /// </summary>
         private bool TryNearAccident(ScriptMoveKind kind)
         {
@@ -966,7 +1010,14 @@ namespace Teleop.Eval.JointDrive
                 HeightRange(oi, out float zLo, out float zHi);
                 float bearing = MathF.Atan2(o.Center.Y, o.Center.X) + MathF.PI + (float)(Draw.Uniform(ref _rng, -50, 50) * deg);
                 var dir = new Vector3(MathF.Cos(bearing), MathF.Sin(bearing), 0f);
-                Vector3 tool = new Vector3(o.Center.X, o.Center.Y, (float)Draw.Uniform(ref _rng, zLo, zHi)) + dir * (Support(o, dir) + (float)Draw.Uniform(ref _rng, 0.01, 0.06));
+                Vector3 tool = new Vector3(o.Center.X, o.Center.Y, Height(zLo, zHi)) + dir * (Support(o, dir) + (float)Draw.Uniform(ref _rng, 0.01, 0.06));
+                // Aimed (docs/adr/0038 "M, motion", the 2026-11-24 review): the hand stops a kind's own distance short of where the model first
+                // meets the object on this line, and the accident carries it on into the object, past that by a drawn depth.
+                bool aimed = _options.AimAccidents && kind != ScriptMoveKind.WrongWay;
+                (double reachMin, double reachMax) = AimedReach(kind);
+                // Drawn only when aimed, so that with the option off every draw is as it was.
+                float depth = aimed ? MathF.Min((float)Draw.Uniform(ref _rng, AimedDepthMin, AimedDepthMax), MathF.Max(0.004f, DeepestGap(oi) - 0.002f)) : 0f;
+                float reach = aimed ? (float)Draw.Uniform(ref _rng, reachMin, reachMax) : 0f;
                 // The wrist pitched for the height (PitchAt), else up to 36 degrees either way: where the hand would stop must be in reach, in the
                 // envelope and clear of the robot itself, or no try there plans.
                 float pitch0 = PitchAt(new Vector2(tool.X, tool.Y).Length(), tool.Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg), pitch = pitch0;
@@ -988,8 +1039,41 @@ namespace Teleop.Eval.JointDrive
                     continue;
                 }
 
+                Vector3? into = null;
+                if (aimed)
+                {
+                    // Where the model first meets the object along the line in toward it, at this height and pitch, 5 mm steps from 3 cm out.
+                    Vector3 surface = tool - dir * Vector3.Dot(tool - new Vector3(o.Center.X, o.Center.Y, tool.Z), dir) + dir * Support(o, dir);
+                    float gripper = _hand.Commands.Count > 0 ? _hand.Commands[_hand.Commands.Count - 1].Gripper : 0f;
+                    float met = float.NaN;
+                    ArmPose q = last;
+                    for (float out_ = 0.03f; out_ >= -0.08f && float.IsNaN(met); out_ -= 0.005f)
+                    {
+                        if (!TrySolve(q, WristFor(surface + dir * out_, pitch), pitch, out ArmPose p)) continue;
+                        q = p;
+                        if (Gap(oi, p, float.IsNaN(gripper) ? 0f : gripper) <= 0f) met = out_;
+                    }
+
+                    if (float.IsNaN(met) || reach - depth < 0.005f)
+                    {
+                        _nearUnreachable++;
+                        continue;
+                    }
+
+                    Vector3 stop = surface + dir * (met + reach - depth);
+                    if (!TrySolve(last, WristFor(stop, pitch), pitch, out ArmPose atStop) || !_envelope.Contains(atStop) || !ArmCollision.IsValid(_profile, _model, atStop))
+                    {
+                        _nearUnreachable++;
+                        continue;
+                    }
+
+                    into = -dir * reach; // the wrist moves as the tool does: the pitch is held
+                    tool = stop;
+                }
+
                 Vector3 goal = WristFor(tool, pitch), from = _hand.TargetEnd;
 
+                _hand.AccidentReach = into;
                 if (!_hand.MixedTo(goal, pitch, null, Slowness(), HandModel.Tolerance, _model, out double s, out double e, walls: DrawWalls(), accident: kind))
                 {
                     _nearRefused++;
@@ -1012,6 +1096,257 @@ namespace Teleop.Eval.JointDrive
 
             return false;
         }
+
+        /// <summary>
+        /// A height for meeting an object between <paramref name="lo"/> and <paramref name="hi"/> (base frame z): with
+        /// <see cref="MixedOptions.SharedHeights"/>, from the blind goals' <see cref="BlindReach.ToolBands"/> within that range (a band by its
+        /// share of the range, then uniform in it), uniform when they offer none of it; else uniform, as before.
+        /// </summary>
+        private float Height(float lo, float hi)
+        {
+            float[]? b = _options.Reach.ToolBands;
+            if (!_options.SharedHeights || b == null || !(hi > lo)) return (float)Draw.Uniform(ref _rng, lo, hi);
+            double total = BandMass(lo, hi);
+            if (!(total > 1e-6)) return (float)Draw.Uniform(ref _rng, lo, hi);
+            double u = _rng.NextDouble() * total;
+            for (int i = 0; i < b.Length; i += 3)
+            {
+                float a = MathF.Max(lo, b[i]), z = MathF.Min(hi, b[i + 1]);
+                if (!(z > a)) continue;
+                u -= BandShare(b, i) * (z - a) / (b[i + 1] - b[i]);
+                if (u < 0) return (float)Draw.Uniform(ref _rng, a, z);
+            }
+
+            return (float)Draw.Uniform(ref _rng, lo, hi);
+        }
+
+        /// <summary>How much of the blind goals' height distribution (<see cref="BlindReach.ToolBands"/>, as shares of 1) lies between <paramref name="lo"/> and <paramref name="hi"/>.</summary>
+        private float BandMass(float lo, float hi)
+        {
+            float[]? b = _options.Reach.ToolBands;
+            if (b == null) return MathF.Max(0f, hi - lo);
+            float m = 0f;
+            for (int i = 0; i < b.Length; i += 3)
+            {
+                float a = MathF.Max(lo, b[i]), z = MathF.Min(hi, b[i + 1]);
+                if (z > a) m += BandShare(b, i) * (z - a) / (b[i + 1] - b[i]);
+            }
+
+            return m;
+        }
+
+        private static float BandShare(float[] b, int i)
+        {
+            float total = 0f;
+            for (int k = 2; k < b.Length; k += 3) total += b[k];
+            return total > 0 ? b[i + 2] / total : 0f;
+        }
+
+        /// <summary>An object reaching above this (base frame z, m: 11.6 cm above the table) may be met by a link aim (<see cref="MixedOptions.LinkAimShare"/>).</summary>
+        public const float HighPointZ = -0.08f;
+
+        private int _linkTried, _linkMade;
+        private readonly int[] _linkLinks = new int[5];
+        private readonly int[] _linkWhy = new int[10]; // why link aims failed, for the report: no candidate, pose, start, start near, unmet, met by pads, goal, staging, move, law
+
+        /// <summary>
+        /// A link aim (docs/adr/0038 "M, motion", the 2026-11-24 review, <see cref="MixedOptions.LinkAimShare"/>): object <paramref name="oi"/> met
+        /// near its top (a plank from below) by the proximal or distal link (the elbow's two) or the wrist, not the pads. A pose is looked for
+        /// whose link passes 1.2-4 cm from a point drawn there (a long object's near the point of its length nearest the base; the arm turned
+        /// to it, the two elbow joints on a 3-degree grid, the gripper pitched from down to level), valid by the robot's own model and what
+        /// holds the object up. Its approach starts as far back as an aim's (<see cref="ApproachLength"/>): turned round the base by that much at
+        /// the wrist's radius, or for a plank lifted at the shoulder, either side, 1 cm clear; on the joint-space way from there the model must
+        /// meet the object first with that kind of link (2% steps). The hand is staged at the start (clear of the object by 1 cm), then moves
+        /// as a free move does to the wrist and pitch of the pose on that way at a signed offset drawn from -15 mm (into it, no deeper than the
+        /// model measures) to +40 mm (short of it). Recorded as an <c>aim</c>, with an accident when the part drew one; then the law every move
+        /// follows. False when nothing plans in a few tries. The JetRover's links are 13 cm from a shoulder 3.5 cm above the base frame: the
+        /// upper arm meets only what stands within about 15 cm of the base's axis and high, the forearm within about 25 cm.
+        /// </summary>
+        private bool TryLinkAim(int oi, ScriptMoveKind? accident)
+        {
+            const double deg = Math.PI / 180.0;
+            SafetyObject o = _objects[oi];
+            _linkTried++;
+            ArmPose last = _hand.Poses.Count > 0 ? _hand.Poses[_hand.Poses.Count - 1] : _model.Home;
+            float gripper = _hand.Commands.Count > 0 ? _hand.Commands[_hand.Commands.Count - 1].Gripper : 0f;
+            if (float.IsNaN(gripper)) gripper = 0f;
+            var arm = _linkArm ??= new ArmTouch(_profile, _model);
+            ArmCollisionModel holders = HolderWalls(oi);
+            Vector3 ax = Vector3.Transform(Vector3.UnitX, o.Rotation), ay = Vector3.Transform(Vector3.UnitY, o.Rotation);
+            Span<LinkFrame> frames = stackalloc LinkFrame[5];
+            var candidates = new List<(ArmPose Pose, ArmLink Link)>();
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                // The point: on its top's upper few cm, or a high plank's underside, somewhere over its footprint (a bar along its length).
+                float fx = (float)Draw.Uniform(ref _rng, -0.8, 0.8) * o.HalfExtents.X, fy = (float)Draw.Uniform(ref _rng, -0.8, 0.8) * o.HalfExtents.Y;
+                // A long one (a plank, a bar across the reach) near the point of its length nearest the base's axis, within 8 cm of it.
+                if (o.HalfExtents.X > 0.08f)
+                {
+                    var c2 = new Vector2(o.Center.X, o.Center.Y);
+                    var a2 = Vector2.Normalize(new Vector2(ax.X, ax.Y) + new Vector2(1e-6f, 0f));
+                    fx = Math.Clamp(-Vector2.Dot(c2, a2) + (float)Draw.Uniform(ref _rng, -0.08, 0.08), -0.9f * o.HalfExtents.X, 0.9f * o.HalfExtents.X);
+                }
+                float height = o.Max.Z - o.Min.Z;
+                float z = o.Role == SceneRole.Plank ? (Draw.Chance(ref _rng, 0.8) ? o.Min.Z : o.Max.Z) : o.Max.Z - (float)Draw.Uniform(ref _rng, 0, MathF.Min(0.06f, height / 2));
+                Vector3 point = new Vector3(o.Center.X, o.Center.Y, 0f) + ax * fx + ay * fy;
+                point.Z = z;
+                float r = new Vector2(point.X, point.Y).Length();
+                if (r < 0.06f || r > 0.42f) continue;
+                // Which link, by what can stand there: the arm's two links are 13 cm each from a shoulder 3.5 cm above the base frame, so the
+                // upper arm meets only what is within about 15 cm of the base's axis, the forearm's middle what is within about 25 cm.
+                double w = _rng.NextDouble();
+                ArmLink want = r <= 0.15f && w < 0.4 ? ArmLink.Proximal : r <= 0.25f && w < 0.75 ? ArmLink.Distal : ArmLink.Wrist;
+                float yaw = MathF.Atan2(point.Y, point.X) + (float)(Draw.Uniform(ref _rng, -4, 4) * deg);
+                AngleRange ry = _envelope[0], rp = _envelope[1], rd = _envelope[2], rw = _envelope[3];
+                if (yaw < ry.Min || yaw > ry.Max) continue;
+                candidates.Clear();
+                // The wrist: the gripper pitched from straight down to level (the joint within its range), one pitch a try.
+                float pitch = (float)(Draw.Uniform(ref _rng, -90, 0) * deg);
+                for (float p1 = rp.Min; p1 <= rp.Max; p1 += (float)(3 * deg))
+                for (float p2 = rd.Min; p2 <= rd.Max; p2 += (float)(3 * deg))
+                {
+                    float p3 = Math.Clamp(pitch - p1 - p2, rw.Min, rw.Max);
+                    var pose = new ArmPose(yaw, p1, p2, p3, 0f);
+                    ArmCollision.ComputeFrames(_profile, pose, frames);
+                    int li = (int)want;
+                    Vector3 a = frames[li].Origin, b = li + 1 < 5 ? frames[li + 1].Origin : frames[li].ToBase(ToolInGripper);
+                    float d = SegmentDistance(point, a, b, out float along);
+                    // Along the link's middle, not by the joint at its far end (there the next link meets it first).
+                    if (d < 0.012f || d > 0.04f || along < (want == ArmLink.Wrist ? 0f : 0.1f) || along > 0.9f) continue;
+                    if (!_envelope.Contains(pose) || !ArmCollision.IsValid(_profile, holders, pose)) continue;
+                    candidates.Add((pose, want));
+                }
+
+                if (candidates.Count == 0) _linkWhy[0]++;
+                for (int c = 0; c < 6 && candidates.Count > 0; c++)
+                {
+                    int pick = (int)(_rng.NextDouble() * candidates.Count) % candidates.Count;
+                    (ArmPose target, ArmLink link) = candidates[pick];
+                    candidates.RemoveAt(pick);
+                    if (!_envelope.Contains(target) || !ArmCollision.IsValid(_profile, holders, target)) { _linkWhy[1]++; continue; }
+                    // Where the approach starts: turned 12-25 degrees to a side, so every link sweeps round the base and what meets the object
+                    // first is what stands at its radius and height; or, under a plank, lowered 8-14 degrees at the shoulder, up into it.
+                    bool lift = o.Role == SceneRole.Plank; // a turn would keep a link under a bar across the reach
+                    // As far back as an aim starts (ApproachLength, the free moves' own law), turned round the base at the wrist's radius or
+                    // lifted at the shoulder by that much of the forearm's swing; at least 12 (15) degrees, so the start is clear.
+                    float back = ApproachLength(), wristRadius = MathF.Max(0.08f, new Vector2(HandModel.Wrist(_profile, target).X, HandModel.Wrist(_profile, target).Y).Length());
+                    float side = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
+                    float turn = lift ? Math.Clamp(back / 0.13f, (float)(15 * deg), (float)(50 * deg)) : Math.Clamp(back / wristRadius, (float)(12 * deg), (float)(70 * deg));
+                    ArmPose start = target;
+                    bool clear = false;
+                    for (int t = 0; t < 2 && !clear; t++, side = -side)
+                    {
+                        // The drawn side first, then the other.
+                        start = lift ? DrivePlan.WithJoint(target, 1, target.Proximal + side * turn) : DrivePlan.WithJoint(target, 0, target.BaseYaw + side * turn);
+                        if (!_envelope.Contains(start) || !ArmCollision.IsValid(_profile, holders, start)) continue;
+                        arm.At(start, gripper);
+                        clear = arm.Gap(o, 0.02f) >= 0.01f;
+                    }
+
+                    if (!clear) { _linkWhy[2]++; continue; }
+                    // Met first by a link that is not the pads, on the way from there.
+                    float met = float.NaN;
+                    ArmLink first = ArmLink.Gripper;
+                    for (float l = 0f; l <= 1.0001f; l += 0.02f)
+                    {
+                        arm.At(ArmPose.Lerp(start, target, l), gripper);
+                        if (!arm.Touching(o, out ArmLink by, out _)) continue;
+                        met = l;
+                        first = by;
+                        break;
+                    }
+
+                    if (float.IsNaN(met)) { _linkWhy[4]++; continue; }
+                    if (first == ArmLink.Gripper || first == ArmLink.Turntable) { _linkWhy[5]++; continue; }
+                    // The stop: a signed offset along that way as the model measures it (into it no deeper than it measures).
+                    float offset = (float)Draw.Uniform(ref _rng, -0.015, 0.04);
+                    offset = MathF.Max(offset, -(DeepestGap(oi) - 0.002f));
+                    ArmPose goalPose = ArmPose.Lerp(start, target, met);
+                    if (offset >= 0f)
+                    {
+                        for (float l = met; l >= 0f; l -= 0.01f)
+                        {
+                            goalPose = ArmPose.Lerp(start, target, l);
+                            if (Gap(oi, goalPose, gripper) >= offset) break;
+                        }
+                    }
+                    else
+                    {
+                        for (float l = met; l <= 1.3f; l += 0.01f)
+                        {
+                            ArmPose q = ArmPose.Lerp(start, target, l);
+                            if (!_envelope.Contains(q)) break;
+                            goalPose = q;
+                            if (Gap(oi, q, gripper) <= offset) break;
+                        }
+                    }
+
+                    if (!_envelope.Contains(goalPose) || !ArmCollision.IsValid(_profile, holders, goalPose)) { _linkWhy[6]++; continue; }
+                    Vector3 startWrist = HandModel.Wrist(_profile, start), goal = HandModel.Wrist(_profile, goalPose);
+                    float startPitch = HandModel.PitchOf(start), goalPitch = HandModel.PitchOf(goalPose);
+                    HandSnapshot before = _hand.Save();
+                    int drafts = _drafts.Count;
+                    // To where it starts, clear of the object by 1 cm and of what holds it up, blind to the others (as an aim's staging is).
+                    ArmCollisionModel staging = SafetyScript.WithObjects(holders, new[] { o.Grown(0.01f) }, 0f);
+                    if (!_hand.MixedTo(startWrist, startPitch, null, Slowness(), HandModel.Tolerance, staging, out double s, out double e, overTheTop: true))
+                    {
+                        Undo(before, drafts);
+                        continue;
+                    }
+
+                    Add(ScriptMoveKind.Free, -1, float.NaN, s, e, part: MovePart.Staging);
+                    bool withAccident = accident.HasValue && _hand.MixedTo(goal, goalPitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e, accident: accident);
+                    double onset = _hand.AccidentOnset, recovered = _hand.AccidentEnd;
+                    if (!withAccident && !_hand.MixedTo(goal, goalPitch, null, Slowness(), HandModel.Tolerance, holders, out s, out e))
+                    {
+                        Undo(before, drafts);
+                        continue;
+                    }
+
+                    _objectMoves++;
+                    Vector3 u = goal - startWrist;
+                    u = u.Length() > 1e-6f ? Vector3.Normalize(u) : Vector3.UnitX;
+                    int baseMove = Add(ScriptMoveKind.Aim, oi, offset, s, e, float.NaN, MovePart.Approach);
+                    if (withAccident) Add(accident!.Value, oi, offset, onset, recovered, float.NaN, MovePart.Approach, baseMove);
+                    if (offset < 0 && o.Movable && _moved.Add(oi)) _avoid.Add(new Vector2(o.Center.X, o.Center.Y));
+                    bool intoFixture = !o.Movable && offset < 0.005f;
+                    if (!AfterMove(u, pullBack: true, forced: intoFixture, atLeast: MathF.Max(0f, -offset) + 0.015f))
+                    {
+                        Undo(before, drafts);
+                        _objectMoves--;
+                        continue;
+                    }
+
+                    if (accident.HasValue) Tally(accident.Value, withAccident);
+                    _linkMade++;
+                    _linkLinks[(int)first]++;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private ArmTouch? _linkArm;
+
+        private static float SegmentDistance(Vector3 p, Vector3 a, Vector3 b, out float t)
+        {
+            Vector3 ab = b - a;
+            t = ab.LengthSquared() > 1e-9f ? Math.Clamp(Vector3.Dot(p - a, ab) / ab.LengthSquared(), 0f, 1f) : 0f;
+            return Vector3.Distance(p, a + t * ab);
+        }
+
+        /// <summary>An aimed accident's depth past where the model first meets the object, m (docs/adr/0038 "M, motion", the 2026-11-24 review).</summary>
+        public const double AimedDepthMin = 0.01, AimedDepthMax = 0.03;
+
+        /// <summary>How far an aimed accident carries the hand, m: its kind's own size (a jerk's at most 12 cm, the hand being within about 10 cm).</summary>
+        internal static (double Min, double Max) AimedReach(ScriptMoveKind kind) => kind switch
+        {
+            ScriptMoveKind.Jerk => (AccidentModel.JerkMin, 0.12),
+            ScriptMoveKind.Overshoot => (AccidentModel.OvershootMin, AccidentModel.OvershootMax),
+            ScriptMoveKind.Slip => (AccidentModel.SlipMin, AccidentModel.SlipMax),
+            _ => (0.03, AccidentModel.RushMeters),
+        };
 
         /// <summary>An index into <paramref name="weights"/>, drawn in proportion to them.</summary>
         private int Pick(List<float> weights)
@@ -1108,6 +1443,7 @@ namespace Teleop.Eval.JointDrive
         private bool TryObjectMove(int oi, ScriptMoveKind kind, ScriptMoveKind? accident = null)
         {
             _objectTries++;
+            _tryingPass = false;
             SafetyObject o = _objects[oi];
             const double deg = Math.PI / 180.0;
             float bearing = MathF.Atan2(o.Center.Y, o.Center.X);
@@ -1119,7 +1455,7 @@ namespace Teleop.Eval.JointDrive
             // The height the pads meet it at: uniform over its own height, base to top, within what the arm reaches (HeightRange: above the
             // model's floor or its stand's top, below its top, never down through it; a plank from just under it to its top).
             if (!HeightRange(oi, out float zLo, out float zHi)) return Miss(0);
-            float h = (float)Draw.Uniform(ref _rng, zLo, zHi);
+            float h = Height(zLo, zHi);
             bool plank = o.Role == SceneRole.Plank, under = plank && h < o.Min.Z - 0.008f;
 
             // The pads' path. Mostly an arc round the base at one radius, from either side: the arm's reach is a thin shell round
@@ -1132,7 +1468,25 @@ namespace Teleop.Eval.JointDrive
             // 2026-11-23 over the IK: nothing at 100), so an arc comes from the front; a pass would have to go on past the object,
             // so beyond 80 degrees it is an aim.
             if (MathF.Abs(bearing) > 60f * MathF.PI / 180f) side = MathF.Sign(bearing);
-            if (kind == ScriptMoveKind.Pass && MathF.Abs(bearing) > 80f * MathF.PI / 180f) kind = ScriptMoveKind.Aim;
+            if (kind == ScriptMoveKind.Pass && MathF.Abs(bearing) > 80f * MathF.PI / 180f)
+            {
+                kind = ScriptMoveKind.Aim;
+                _passesTurnedAims++;
+            }
+
+            _tryingPass = kind == ScriptMoveKind.Pass;
+            if (_tryingPass) _passTries++;
+            float rOther = float.NaN; // a pass's radius on the object's other side, the same distance from its middle
+            float s0 = -(halfTangential + 0.32f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfTangential + 0.12f;
+            void Arc(List<Vector3> into, float r)
+            {
+                for (float a = s0; a <= s1 + 1e-6f; a += LineStepMeters)
+                {
+                    float phi = bearing + side * a / r;
+                    into.Add(new Vector3(r * MathF.Cos(phi), r * MathF.Sin(phi), h + slope * a));
+                }
+            }
+
             if (kind == ScriptMoveKind.Pass || !Draw.Chance(ref _rng, RadialShare))
             {
                 float rLine;
@@ -1142,16 +1496,15 @@ namespace Teleop.Eval.JointDrive
                     float out_ = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
                     // Through a movable object, or beside it; a fixture only grazed or passed (it does not give way), but under a plank anywhere.
                     rLine = rObj + out_ * (float)(o.Movable || under ? Draw.Uniform(ref _rng, 0, halfRadial + 0.07) : Draw.Uniform(ref _rng, halfRadial - 0.010, halfRadial + 0.07));
+                    rOther = 2f * rObj - rLine;
+                    // Inside the base's 10 cm, the other side (round 7: a third of the passes' lines found no first pose, nearer the base than
+                    // about 16 cm or beyond about 36 cm, where the other side often reaches).
+                    if (rLine < 0.10f) (rLine, rOther) = (rOther, float.NaN);
+                    if (rOther < 0.10f) rOther = float.NaN;
                 }
 
                 if (rLine < 0.10f) return Miss(1);
-                float s0 = -(halfTangential + 0.32f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfTangential + 0.12f;
-                for (float a = s0; a <= s1 + 1e-6f; a += LineStepMeters)
-                {
-                    float phi = bearing + side * a / rLine;
-                    tools.Add(new Vector3(rLine * MathF.Cos(phi), rLine * MathF.Sin(phi), h + slope * a));
-                }
-
+                Arc(tools, rLine);
                 approach = side * 90f;
             }
             else
@@ -1170,13 +1523,27 @@ namespace Teleop.Eval.JointDrive
             float radius = new Vector2(tools[meet].X, tools[meet].Y).Length();
             // The wrist pitched for the height (PitchAt, as a layout-blind goal there is): pointing down near the table, near level high up a
             // tall object, so the pads lead into it rather than the wrist above them.
-            float pitch = PitchAt(radius, tools[meet].Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
+            float jitter = (float)(Draw.Uniform(ref _rng, -8, 8) * deg), pitch = PitchAt(radius, tools[meet].Z) + jitter;
             float gripper = _hand.GripperEnd;
             List<Vector3>? wrists = null;
             List<ArmPose>? poses = null;
             List<float>? gaps = null;
             int first = 0;
-            if (Line(oi, tools, meet, ref pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g, out int f0)) (wrists, poses, gaps, first) = (w, q, g, f0);
+            // A pass needs its line on both sides of the object, an aim only before it: a pass tries more of the pitches that reach its first
+            // point, then the same distance on the object's other side (docs/adr/0038 "M, motion", round 7: 7 of 349 passes tried on the
+            // bench's layouts 1-60 planned, against 151 of 1399 aims, so a take had a pass in about one in ten).
+            bool pass = kind == ScriptMoveKind.Pass;
+            if (Line(oi, tools, meet, ref pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g, out int f0, pass ? PassUsable : null, pass ? PassPitches : 1))
+                (wrists, poses, gaps, first) = (w, q, g, f0);
+            if (pass && !float.IsNaN(rOther) && (wrists == null || !PassUsable(wrists, gaps!)))
+            {
+                var other = new List<Vector3>(tools.Count);
+                Arc(other, rOther);
+                int meet2 = Meets(o, other);
+                float pitch2 = PitchAt(new Vector2(other[meet2].X, other[meet2].Y).Length(), other[meet2].Z) + jitter;
+                if (Line(oi, other, meet2, ref pitch2, gripper, out w, out q, out g, out f0, PassUsable, PassPitches) && PassUsable(w, g))
+                    (wrists, poses, gaps, first, tools, pitch) = (w, q, g, f0, other, pitch2);
+            }
 
             if (wrists == null || poses == null || gaps == null) return Miss(1);
 
@@ -1312,6 +1679,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             _objectMoves++;
+            if (_tryingPass) _passMoves++;
             int baseMove = Add(kind, oi, offset, s, e, approach, MovePart.Approach);
             bool pushed = false;
             if (withAccident)
@@ -1346,6 +1714,7 @@ namespace Teleop.Eval.JointDrive
             {
                 Undo(before, drafts);
                 _objectMoves--;
+                if (_tryingPass) _passMoves--;
                 return Miss(5);
             }
 
@@ -1460,9 +1829,12 @@ namespace Teleop.Eval.JointDrive
         /// <paramref name="meet"/>, where the path meets it, back toward the start and on toward the end), each part as far as its
         /// poses are in reach, in the envelope, free of the robot's own model and on one branch. The wrist targets in order, their
         /// poses, the arm's gap to the object at each, and the index in <paramref name="tools"/> of the first.
+        /// With <paramref name="usable"/> (a pass's, which needs its line on both sides of the object), the pitches that reach the
+        /// first point are tried in turn, nearest the middle first, up to <paramref name="pitches"/> of them, until a line is usable;
+        /// when none is, the first one's line (docs/adr/0038 "M, motion", round 7).
         /// </summary>
         private bool Line(int oi, List<Vector3> tools, int meet, ref float pitch, float gripper, out List<Vector3> wrists, out List<ArmPose> poses, out List<float> gaps,
-            out int firstIndex)
+            out int firstIndex, Func<List<Vector3>, List<float>, bool>? usable = null, int pitches = 1)
         {
             int n = tools.Count;
             wrists = new List<Vector3>(n);
@@ -1471,7 +1843,6 @@ namespace Teleop.Eval.JointDrive
             firstIndex = 0;
             var wrist = new Vector3?[n];
             var solved = new ArmPose[n];
-            int seed = -1;
             // A first pose as near the object as the path has one, at the pitch asked for or the nearest one that reaches it (the
             // solver refuses what would hit the floor or the arm itself, and the envelope what bends a joint too far: which
             // pitches reach a point near the table changes with its radius and height); then outward from it both ways.
@@ -1483,49 +1854,88 @@ namespace Teleop.Eval.JointDrive
                 else if (works.Count > 0 && k >= 2) break; // past the run of pitches that work on this side
             }
 
-            if (works.Count > 0)
-            {
-                // The middle of the pitches that work, as near the one drawn as that allows: a line pitched at the edge of what reaches
-                // its first point breaks a step or two on.
-                var degrees = works.Select(k => SeedPitchSteps[k]).OrderBy(d => d).ToList();
-                float middle = degrees[degrees.Count / 2];
-                int best = works.OrderBy(k => MathF.Abs(SeedPitchSteps[k] - middle)).First();
-                pitch = PitchStep(asked, best);
-                seed = Seed(tools, meet, pitch, wrist, solved);
-            }
-
-            if (seed < 0)
+            if (works.Count == 0)
             {
                 _lineBreaks[0]++;
                 return false;
             }
 
-            int first = seed, last = seed;
-            for (int i = seed - 1; i >= 0; i--)
+            // The middle of the pitches that work, as near the one drawn as that allows: a line pitched at the edge of what reaches
+            // its first point breaks a step or two on.
+            var degrees = works.Select(k => SeedPitchSteps[k]).OrderBy(d => d).ToList();
+            float middle = degrees[degrees.Count / 2];
+            List<int> order = works.OrderBy(k => MathF.Abs(SeedPitchSteps[k] - middle)).ToList();
+            float firstPitch = 0f;
+            int firstFirst = 0;
+            List<Vector3>? w0 = null;
+            List<ArmPose>? q0 = null;
+            List<float>? g0 = null;
+            for (int r = 0; r < Math.Min(Math.Max(1, pitches), order.Count); r++)
             {
-                if (!wrist[i].HasValue) { _lineBreaks[5]++; break; }
-                int why = Why(solved[i + 1], wrist[i]!.Value, pitch, out solved[i]);
-                if (why > 0) { _lineBreaks[why]++; break; }
-                first = i;
+                float p = PitchStep(asked, order[r]);
+                int seed = Seed(tools, meet, p, wrist, solved);
+                if (seed < 0) continue;
+                int first = seed, last = seed;
+                for (int i = seed - 1; i >= 0; i--)
+                {
+                    if (!wrist[i].HasValue) { _lineBreaks[5]++; break; }
+                    int why = Why(solved[i + 1], wrist[i]!.Value, p, out solved[i]);
+                    if (why > 0) { _lineBreaks[why]++; break; }
+                    first = i;
+                }
+
+                for (int i = seed + 1; i < n; i++)
+                {
+                    if (!wrist[i].HasValue) { _lineBreaks[5]++; break; }
+                    int why = Why(solved[i - 1], wrist[i]!.Value, p, out solved[i]);
+                    if (why > 0) { _lineBreaks[why]++; break; }
+                    last = i;
+                }
+
+                var w = new List<Vector3>(last - first + 1);
+                var q = new List<ArmPose>(last - first + 1);
+                var g = new List<float>(last - first + 1);
+                for (int i = first; i <= last; i++)
+                {
+                    w.Add(wrist[i]!.Value);
+                    q.Add(solved[i]);
+                    g.Add(Gap(oi, solved[i], gripper));
+                }
+
+                if (w.Count >= 3 && (usable == null || usable(w, g)))
+                {
+                    (wrists, poses, gaps, firstIndex, pitch) = (w, q, g, first, p);
+                    return true;
+                }
+
+                if (w0 == null) (w0, q0, g0, firstFirst, firstPitch) = (w, q, g, first, p);
             }
 
-            for (int i = seed + 1; i < n; i++)
+            if (w0 == null)
             {
-                if (!wrist[i].HasValue) { _lineBreaks[5]++; break; }
-                int why = Why(solved[i - 1], wrist[i]!.Value, pitch, out solved[i]);
-                if (why > 0) { _lineBreaks[why]++; break; }
-                last = i;
+                _lineBreaks[0]++;
+                return false;
             }
 
-            for (int i = first; i <= last; i++)
-            {
-                wrists.Add(wrist[i]!.Value);
-                poses.Add(solved[i]);
-                gaps.Add(Gap(oi, solved[i], gripper));
-            }
-
-            firstIndex = first;
+            (wrists, poses, gaps, firstIndex, pitch) = (w0, q0!, g0!, firstFirst, firstPitch);
             return wrists.Count >= 3;
+        }
+
+        /// <summary>How many of the pitches that reach a pass's first point its line tries (<see cref="Line"/>).</summary>
+        private const int PassPitches = 3;
+
+        /// <summary>
+        /// Whether a pass's line goes on both sides of its object far enough to be made (the checks <see cref="TryObjectMove(int, ScriptMoveKind, ScriptMoveKind?)"/>
+        /// makes of it, without its draws): at least 3 cm of it before its closest point, and past that point until the gap opens 1 cm.
+        /// </summary>
+        private static bool PassUsable(List<Vector3> wrists, List<float> gaps)
+        {
+            int closest = 0;
+            for (int i = 1; i < gaps.Count; i++) if (gaps[i] < gaps[closest]) closest = i;
+            if (Vector3.Distance(wrists[0], wrists[closest]) < 0.03f) return false;
+            int exit = closest;
+            while (exit < gaps.Count && gaps[exit] < Math.Max(gaps[closest], 0f) + 0.010f) exit++;
+            return exit < gaps.Count;
         }
 
         private static float PitchStep(float asked, int k) => Math.Clamp(asked + SeedPitchSteps[k] * MathF.PI / 180f, -89f * MathF.PI / 180f, -8f * MathF.PI / 180f);

@@ -556,7 +556,8 @@ namespace Teleop.RobotHost.World
                     if (o.Role == SceneRole.Distractor) _scene.DrawDistractorSpot(ref rng, out x, out y, out yaw);
                     else _scene.DrawObstacleSpot(index, ref rng, out x, out y, out yaw);
                     double z = _scene.RestingZ(index, ScaleFor(index), rest);
-                    if (!_scene.FitsOnTable(index, x, y, yaw, ScaleFor(index), rest)) continue;
+                    // docs/adr/0038, the third pass: clear of where the arm stands between takes, as the layout keeps it.
+                    if (!_scene.FitsOnTable(index, x, y, yaw, ScaleFor(index), rest) || _scene.InArmRest(index, x, y, z, yaw, ScaleFor(index), rest)) continue;
                     bool free = true;
                     for (int k = 0; k < _targets.Length && free; k++)
                     {

@@ -246,6 +246,7 @@ namespace Teleop.RobotArm.World
             /// </summary>
             private bool ClearAt(int i, double x, double y, double z, double yaw, double scale, int rest)
             {
+                if (_scene.InArmRest(i, x, y, z, yaw, scale, rest)) return false; // the third pass: clear of where the arm stands between takes
                 for (int q = 0; q < _count; q++)
                 {
                     if (_scene.OverlapsAtHeights(i, x, y, z, yaw, _index[q], _x[q], _y[q], _z[q], _yaw[q], scale, _scales[_index[q]], rest, _rest[q])) return false;
@@ -337,11 +338,16 @@ namespace Teleop.RobotArm.World
                 double length = plank.SizeX * plankScale, legX = leg.SizeX * supportScale, height = leg.SizeZ * supportScale;
                 double off = length / 2 - legX / 2;
                 double legZ = _scene.RestingZ(a, supportScale, WorldScene.RestUpright), z = _scene.Table.Top + height + plank.SizeZ * plankScale / 2;
-                for (int t = 0; t < MaxPoolTries; t++)
+                bool bar = plank.Overhead;
+                for (int t = 0; t < (bar ? WorldScene.MaxBarTries : MaxPoolTries); t++)
                 {
-                    _scene.DrawObstacleSpot(p, ref rng, out double x, out double y, out double yaw);
+                    double x, y, yaw;
+                    if (bar) _scene.DrawBarSpot(p, plankScale, ref rng, out x, out y, out yaw); // the third pass: across the reach
+                    else _scene.DrawObstacleSpot(p, ref rng, out x, out y, out yaw);
                     double c = Math.Cos(yaw), s = Math.Sin(yaw);
                     double ax = x - off * c, ay = y - off * s, bx = x + off * c, by = y + off * s;
+                    // An overhead bar's posts stand beyond the obstacles' band, out of the arm's turn at home.
+                    if (bar && (!_scene.BeyondBand(a, ax, ay, yaw, supportScale) || !_scene.BeyondBand(b, bx, by, yaw, supportScale))) continue;
                     if (!_scene.FitsOnTable(p, x, y, yaw, plankScale, WorldScene.RestUpright) || !ClearAt(p, x, y, z, yaw, plankScale, WorldScene.RestUpright)) continue;
                     if (!_scene.FitsOnTable(a, ax, ay, yaw, supportScale, WorldScene.RestUpright) || !ClearAt(a, ax, ay, legZ, yaw, supportScale, WorldScene.RestUpright)) continue;
                     if (b >= 0 && (!_scene.FitsOnTable(b, bx, by, yaw, supportScale, WorldScene.RestUpright) || !ClearAt(b, bx, by, legZ, yaw, supportScale, WorldScene.RestUpright) ||
@@ -396,7 +402,8 @@ namespace Teleop.RobotArm.World
             Span<int> distractors = stackalloc int[WorldScene.MaxObjects];
             Span<int> stands = stackalloc int[WorldScene.MaxObjects];
             Span<int> planks = stackalloc int[WorldScene.MaxObjects];
-            int freeObstacles = 0, distractorCount = 0, freeStands = 0, freePlanks = 0;
+            Span<int> bars = stackalloc int[WorldScene.MaxObjects];
+            int freeObstacles = 0, distractorCount = 0, freeStands = 0, freePlanks = 0, freeBars = 0;
             for (int i = 0; i < n; i++)
             {
                 parked[i] = true;
@@ -406,6 +413,7 @@ namespace Teleop.RobotArm.World
                     case SceneRole.Obstacle: obstacles[freeObstacles++] = i; break;
                     case SceneRole.Distractor: distractors[distractorCount++] = i; break;
                     case SceneRole.Stand: stands[freeStands++] = i; break;
+                    case SceneRole.Plank when scene.Objects[i].Overhead: bars[freeBars++] = i; break;
                     case SceneRole.Plank: planks[freePlanks++] = i; break;
                 }
             }
@@ -419,10 +427,19 @@ namespace Teleop.RobotArm.World
             Span<double> yaws = stackalloc double[WorldScene.MaxObjects];
             var standing = new Standing(scene, poses, parked, scales, placed, xs, ys, yaws, rests, anchors, zs);
             var rng = new SeededRng(seed);
-            int units = Count(ref rng, scene.ObstacleMin, Math.Min(scene.ObstacleMax, freeObstacles + freePlanks));
+            int units = Count(ref rng, scene.ObstacleMin, Math.Min(scene.ObstacleMax, freeObstacles + freePlanks + freeBars));
             int failed = 0;
-            for (int u = 0; u < units && freeObstacles + freePlanks > 0; u++)
+            for (int u = 0; u < units && freeObstacles + freePlanks + freeBars > 0; u++)
             {
+                // The scene's third pass (docs/adr/0038): an overhead bar with its own chance, when one is free (one more draw; none
+                // without bars, so any other pool draws as before).
+                if (freeBars > 0 && (freeObstacles + freePlanks == 0 || rng.NextDouble() < scene.OverheadShare))
+                {
+                    int p = Take(ref rng, bars, ref freeBars);
+                    failed += DrawRigSizes(scene, p, ref rng, out double plankScale, out double supportScale) && standing.StandRig(p, plankScale, supportScale, ref rng) ? 0 : 1;
+                    continue;
+                }
+
                 if (freePlanks > 0 && (freeObstacles == 0 || (scene.RigShare > 0 && rng.NextDouble() < scene.RigShare)))
                 {
                     int p = Take(ref rng, planks, ref freePlanks);

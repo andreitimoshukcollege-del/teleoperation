@@ -97,6 +97,10 @@ namespace Teleop.Eval.JointDrive
             var modelKinds = new Dictionary<string, int>();
             var modelParts = new Dictionary<string, int>();
             int modelTakes = 0, modelOnsets = 0;
+            // docs/adr/0038 "M, motion" (2026-11-24 review): contacts as the twin's arm makes them, on the follower of the command (TakeAudit's,
+            // fitted to the pilot's measured joints): each onset given to the accident whose span (and the lag after) holds it, else to the move
+            // under way a delay before; the tool point's height, the touching link and the contact point's height.
+            var lagged = new LagTally();
             var aimTool = new List<double>(); // the tool point where each aim ends (its goal as planned), base frame z
             var blindTool = new List<double>(); // and where each layout-blind move to a goal ends
             // docs/adr/0038 decision 2: whether the model expects each replay's edit to change what the take touches, by edit and by how near
@@ -194,6 +198,7 @@ namespace Teleop.Eval.JointDrive
                     Accidents(profile, model, plan, objects, byMove, ref records, ref contactRecords, ref accidentRecords, ref accidentContactRecords, ref accidentOnsets,
                         ref accidentsTouching, ref accidentsNear, ref accidentsFree, ref accidentsQuietStart, ref accidentsLate, ref accidentTakes, accidentKindContacts);
 
+                if (script == DriveScript.Mixed) LagAwareContacts(arm, plan, Followed(plan), objects, lagged);
                 if (touched) contactTakes++;
                 if (script == DriveScript.Mixed)
                 {
@@ -281,6 +286,7 @@ namespace Teleop.Eval.JointDrive
                 double tpr = accidentContactRecords / (double)Math.Max(1, contactRecords), fpr = (accidentRecords - accidentContactRecords) / (double)Math.Max(1, records - contactRecords);
                 Console.WriteLine(FormattableString.Invariant(
                     $"  'the move is an accident' for 'the move makes a contact' (by the model, each onset to the move last begun): AUC {0.5 * (1 + tpr - fpr):0.000} (of {records} records, {contactRecords} with a contact; accidents {accidentContactRecords} of them, and {accidentRecords - accidentContactRecords} of the {records - contactRecords} without)"));
+                lagged.Print();
                 Console.WriteLine("  their tool point, cm from the base frame: " + Spread(modelTool) + "; 5 cm bins from -20: " + Histogram(modelTool.Select(z => z * 100.0), -20, 5, 8));
                 Console.WriteLine("  tool point where moves end, cm from the base frame: aims " + Spread(aimTool) + "; layout-blind moves to a goal " + Spread(blindTool));
                 Console.WriteLine("  aims' ends, 5 cm bins from -20: " + Histogram(aimTool.Select(z => z * 100.0), -20, 5, 8) + "; blind goals': " + Histogram(blindTool.Select(z => z * 100.0), -20, 5, 8));
@@ -637,6 +643,149 @@ namespace Teleop.Eval.JointDrive
                 row[0]++;
                 if (before != after) row[1]++;
                 if (anyBefore != anyAfter) row[2]++;
+            }
+        }
+
+        /// <summary>The lag-aware contacts' tallies (<see cref="LagAwareContacts"/>).</summary>
+        internal sealed class LagTally
+        {
+            public int Takes, Planned, Onsets, AccidentOnsets, Records, ContactRecords, Accidents, AccidentContacts, FreeAccidents, Placed, PlacedContacts;
+            public readonly Dictionary<string, int[]> PlacedByKind = new Dictionary<string, int[]>();
+            public readonly List<double> Tool = new List<double>(), Point = new List<double>();
+            public readonly Dictionary<string, int> Links = new Dictionary<string, int>();
+            public readonly Dictionary<string, int> Parts = new Dictionary<string, int>();
+            public readonly Dictionary<string, List<double>> PointByLink = new Dictionary<string, List<double>>();
+
+            public void Print()
+            {
+                double tpr = AccidentContacts / (double)Math.Max(1, ContactRecords), fpr = (Accidents - AccidentContacts) / (double)Math.Max(1, Records - ContactRecords);
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  lag-aware contacts (the follower: {TakeAudit.FollowDelay:0.00} s late, tau {TakeAudit.FollowTau:0.00} s, {TakeAudit.FollowSpeed:0.0} rad/s): {Onsets} onsets in {Takes} of {Planned} takes; in an accident's span (+{LagSeconds:0.0} s) {AccidentOnsets} ({100.0 * AccidentOnsets / Math.Max(1, Onsets):0}%); by move: {Kinds(Parts)}"));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"    accidents {Accidents}, with a lag-aware contact {AccidentContacts} ({100.0 * AccidentContacts / Math.Max(1, Accidents):0}%), farther than 10 cm from every object's box (free space) {FreeAccidents}; 'the record is an accident' for 'it makes a contact': AUC {0.5 * (1 + tpr - fpr):0.000} (of {Records} records, {ContactRecords} with a contact)"));
+                Console.WriteLine(FormattableString.Invariant($"    of the accidents, placed near an object {Placed}, with a contact {PlacedContacts}; by kind (placed, with a contact): ") +
+                                  string.Join(", ", PlacedByKind.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value[0]}/{k.Value[1]}")));
+                Console.WriteLine("    tool point cm, 5 cm bins from -20: " + Histogram(Tool.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(Tool) + "); " + Spread(Tool));
+                Console.WriteLine("    contact point cm, 5 cm bins from -20: " + Histogram(Point.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(Point) + ")");
+                Console.WriteLine("    touching link: " + Kinds(Links) + "; contact point by link, p50 cm: " +
+                                  string.Join(", ", PointByLink.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => k.Key + " " + (k.Value.OrderBy(x => x).ElementAt(k.Value.Count / 2) * 100).ToString("0.0", CultureInfo.InvariantCulture))));
+            }
+
+            private static string Largest(List<double> zs)
+            {
+                if (zs.Count == 0) return "none";
+                var bins = new int[64];
+                foreach (double z in zs) bins[Math.Clamp((int)Math.Floor((z * 100.0 + 20.0) / 5.0), 0, 63)]++;
+                return (100.0 * bins.Max() / zs.Count).ToString("0", CultureInfo.InvariantCulture) + "%";
+            }
+        }
+
+        /// <summary>How long after an accident's recorded end a contact is still its own: the arm's lag behind the command (docs/adr/0038 "M, motion").</summary>
+        public const double LagSeconds = 0.2;
+
+        /// <summary>The plan's commands as the twin's arm follows them (<see cref="TakeAudit"/>'s follower), every tick from the take's start.</summary>
+        internal static List<TrackPoint> Followed(DrivePlan plan)
+        {
+            var track = new List<TrackPoint>();
+            double tau = Math.Max(1e-3, TakeAudit.FollowTau), dt = HandModel.TickSeconds, a = 1 - Math.Exp(-dt / tau), max = TakeAudit.FollowSpeed * dt;
+            ArmPose first = plan.Sample(plan.ScriptStart);
+            float[] q = { first.BaseYaw, first.Proximal, first.Distal, first.Wrist, first.Roll };
+            for (double t = plan.ScriptStart; t <= plan.TotalSeconds + 1e-9; t += dt)
+            {
+                double at = Math.Max(plan.ScriptStart, t - TakeAudit.FollowDelay);
+                ArmPose c = plan.Sample(at);
+                float[] target = { c.BaseYaw, c.Proximal, c.Distal, c.Wrist, c.Roll };
+                for (int j = 0; j < 5; j++) q[j] += (float)Math.Clamp((target[j] - q[j]) * a, -max, max);
+                float g = plan.GripperAt(at);
+                track.Add(new TrackPoint(t - plan.ScriptStart, new ArmPose(q[0], q[1], q[2], q[3], q[4]), float.IsNaN(g) ? 0f : g));
+            }
+
+            return track;
+        }
+
+        /// <summary>
+        /// docs/adr/0038 "M, motion": every contact by the model along <paramref name="track"/> (the follower of the plan's commands), as the
+        /// twin's audit counts them on a recorded take (<see cref="TakeAudit"/>): one onset a stretch an object is touched; given to the accident
+        /// whose span and <see cref="LagSeconds"/> after holds it, else to the move under way <see cref="TakeAudit.FollowDelay"/> before.
+        /// </summary>
+        internal static void LagAwareContacts(ArmTouch arm, DrivePlan plan, List<TrackPoint> track, List<SafetyObject> objects, LagTally tally)
+        {
+            var reach = new List<int>();
+            for (int i = 0; i < objects.Count; i++)
+            {
+                SafetyObject o = objects[i];
+                if (!o.Scenery && new Vector2(o.Center.X, o.Center.Y).Length() - MathF.Max(o.HalfExtents.X, o.HalfExtents.Y) < 0.45f) reach.Add(i);
+            }
+
+            IReadOnlyList<PlannedMove> moves = plan.Moves;
+            var contact = new bool[moves.Count];
+            var touching = new bool[objects.Count];
+            int onsets = 0;
+            foreach (TrackPoint p in track)
+            {
+                arm.At(p.Pose, p.Gripper);
+                foreach (int i in reach)
+                {
+                    bool now = arm.Touching(objects[i], out ArmLink link, out Vector3 point);
+                    if (now && !touching[i])
+                    {
+                        onsets++;
+                        double t = plan.ScriptStart + p.At;
+                        int owner = -1;
+                        for (int k = 0; k < moves.Count && owner < 0; k++)
+                            if (ScriptMoveCodec.IsAccident(moves[k].Kind) && t >= moves[k].Start && t <= moves[k].End + LagSeconds) owner = k;
+                        bool accident = owner >= 0;
+                        if (!accident)
+                            for (int k = 0; k < moves.Count; k++)
+                                if (!ScriptMoveCodec.IsAccident(moves[k].Kind) && moves[k].Start <= t - TakeAudit.FollowDelay) owner = k;
+                        if (owner >= 0) contact[owner] = true;
+                        if (accident) tally.AccidentOnsets++;
+                        string part = accident ? "accident" : owner < 0 ? "none" : moves[owner].ObjectId == objects[i].Id ? "aimed" : moves[owner].ObjectId != 0 ? "aimed elsewhere" : "other";
+                        Count(tally.Parts, part);
+                        tally.Tool.Add(arm.Tool.Z);
+                        tally.Point.Add(point.Z);
+                        string name = link.ToString().ToLowerInvariant();
+                        Count(tally.Links, name);
+                        if (!tally.PointByLink.TryGetValue(name, out List<double>? zs)) tally.PointByLink[name] = zs = new List<double>();
+                        zs.Add(point.Z);
+                    }
+
+                    touching[i] = now;
+                }
+            }
+
+            tally.Planned++;
+            tally.Onsets += onsets;
+            if (onsets > 0) tally.Takes++;
+            // Accidents in free space: farther than 10 cm from every object's box over the span, by the model (the commanded way).
+            ArmCollisionModel? within10 = null;
+            for (int k = 0; k < moves.Count; k++)
+            {
+                tally.Records++;
+                if (contact[k]) tally.ContactRecords++;
+                if (!ScriptMoveCodec.IsAccident(moves[k].Kind)) continue;
+                tally.Accidents++;
+                if (moves[k].Part == MovePart.NearAccident)
+                {
+                    tally.Placed++;
+                    if (contact[k]) tally.PlacedContacts++;
+                    string kn = ScriptMoveCodec.Name(moves[k].Kind);
+                    if (!tally.PlacedByKind.TryGetValue(kn, out int[]? pk)) tally.PlacedByKind[kn] = pk = new int[2];
+                    pk[0]++;
+                    if (contact[k]) pk[1]++;
+                }
+
+                if (contact[k])
+                {
+                    tally.AccidentContacts++;
+                    continue;
+                }
+
+                within10 ??= SafetyScript.WithObjects(arm.Model, objects.Where(o => !o.Scenery).ToArray(), 0.10f);
+                bool close = false;
+                for (double t = Math.Max(moves[k].Start, plan.ScriptStart); t <= Math.Min(moves[k].End, plan.TotalSeconds) && !close; t += HandModel.TickSeconds)
+                    close = !ArmCollision.IsValid(arm.Profile, within10, plan.Sample(t));
+                if (!close) tally.FreeAccidents++;
             }
         }
 

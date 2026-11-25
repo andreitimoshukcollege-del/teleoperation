@@ -31,6 +31,9 @@
     {"id": 79, "name": "shelf-leg-b", "shape": "box", "size": [0.04, 0.06, 0.08], "position": [0.3, 0.0, -0.1562], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.55, 0.42, 0.28], "jitter": [0, 0, 0], "role": "support", "steps": [-3, 4]},
     {"id": 80, "name": "cantilever-plank", "shape": "box", "size": [0.26, 0.07, 0.02], "position": [0.3, 0.0, -0.1862], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.58, 0.46, 0.3], "jitter": [0, 0, 0], "role": "plank", "supports": [81], "steps": [-1, 1]},
     {"id": 81, "name": "cantilever-base", "shape": "box", "size": [0.1, 0.1, 0.1], "position": [0.3, 0.0, -0.1462], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.45, 0.35, 0.24], "jitter": [0, 0, 0], "role": "support", "steps": [-3, 2]},
+    {"id": 84, "name": "overhead-bar", "shape": "box", "size": [0.72, 0.03, 0.025], "position": [0.3, 0.0, -0.1837], "rpy": [0, 0, 1.5708], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.55, 0.55, 0.57], "jitter": [0, 0, 0], "role": "plank", "supports": [85, 86], "overhead": true},
+    {"id": 85, "name": "bar-post-a", "shape": "box", "size": [0.03, 0.03, 0.31], "position": [0.3, 0.0, -0.0412], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.5, 0.4, 0.28], "jitter": [0, 0, 0], "role": "support", "steps": [-2, 1]},
+    {"id": 86, "name": "bar-post-b", "shape": "box", "size": [0.03, 0.03, 0.31], "position": [0.3, 0.0, -0.0412], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.5, 0.4, 0.28], "jitter": [0, 0, 0], "role": "support", "steps": [-2, 1]},
     {"id": 62, "name": "pliers", "shape": "mesh", "asset": "polyhaven/tongue_groove_pliers", "size": [0.06251, 0.24442, 0.01387], "position": [0.15, 0.62, -0.18927], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.25, "operatorMovable": false, "staticFriction": 0.35, "dynamicFriction": 0.3, "colour": [0.65, 0.12, 0.1], "jitter": [0, 0, 0], "clutter": true, "role": "distractor"},
     {"id": 63, "name": "screwdrivers", "shape": "mesh", "asset": "polyhaven/screwdrivers_02", "size": [0.10046, 0.26993, 0.02708], "position": [0.15, 0.62, -0.18266], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.12, "operatorMovable": false, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.85, 0.65, 0.1], "jitter": [0, 0, 0], "clutter": true, "role": "distractor"},
     {"id": 64, "name": "phone", "shape": "box", "size": [0.0715, 0.1468, 0.0079], "position": [0.15, 0.62, -0.19225], "rpy": [0, 0, 0.0], "kind": "movable", "mass": 0.17, "operatorMovable": false, "staticFriction": 0.4, "dynamicFriction": 0.35, "colour": [0.03, 0.03, 0.035], "jitter": [0, 0, 0], "clutter": true, "role": "distractor"},
@@ -40,7 +43,7 @@
     {"id": 43, "name": "vintage-electric-kettle", "shape": "mesh", "asset": "polyhaven/vintage_electric_kettle", "size": [0.32089, 0.24855, 0.30474], "position": [0.2, 0.62, -0.04383], "rpy": [0, 0, 0.0], "kind": "fixed", "operatorMovable": false, "staticFriction": 0.6, "dynamicFriction": 0.5, "colour": [0.75, 0.75, 0.72], "jitter": [0, 0, 0], "role": "distractor"}
   ],
   "placement": {"xMin": -0.3, "xMax": 0.6, "yMin": -0.6, "yMax": 0.6, "clearance": 0.01},
-  "pool": {"obstacleMin": 0, "obstacleMax": 3, "reachMin": 0.13, "reachMax": 0.34, "reachBearing": 1.658, "lyingShare": 0.35, "standShare": 0.3, "rigShare": 0.2, "tallShare": 0.1, "workMin": 0.16, "workMax": 0.3, "workBearing": 1.0472, "standTopMin": 0.4, "standTopMax": 0.75, "rigUnderMin": 0.04, "rigUnderMax": 0.2, "distractorMin": 2, "distractorMax": 6, "distractorRegions": [-0.2, 0.4, 0.47, 0.72, -0.2, 0.4, -0.72, -0.47, 0.28, 0.52, 0.28, 0.47, 0.28, 0.52, -0.47, -0.28], "distractorReach": 0.45, "robotKeepOut": [-0.21, 0.14, -0.2, 0.2], "knockMaxMass": 0.7},
+  "pool": {"obstacleMin": 0, "obstacleMax": 3, "reachMin": 0.13, "reachMax": 0.34, "reachBearing": 1.658, "lyingShare": 0.35, "standShare": 0.45, "rigShare": 0.3, "tallShare": 0.25, "workMin": 0.16, "workMax": 0.3, "workBearing": 1.0472, "standTopMin": 0.4, "standTopMax": 0.75, "rigUnderMin": 0.04, "rigUnderMax": 0.5, "overheadShare": 0.25, "armRest": [0.12, 0.36, -0.06, 0.06, -0.03, 0.17], "distractorMin": 2, "distractorMax": 6, "distractorRegions": [-0.2, 0.4, 0.47, 0.72, -0.2, 0.4, -0.72, -0.47, 0.28, 0.52, 0.28, 0.47, 0.28, 0.52, -0.47, -0.28], "distractorReach": 0.45, "robotKeepOut": [-0.21, 0.14, -0.2, 0.2], "knockMaxMass": 0.7},
   "environment": {"kind": "hdri", "dome": "dome", "change": "per-session", "manifest": "~/isaacsim/assets/hdri/polyhaven-indoor/manifest.json", "meanRadiance": 1000, "targetBrightness": 118, "yawDeg": [0, 360], "rotateXYZDeg": [0, 0, 0], "hideSurfaces": ["floor"]},
   "materials": {
     "manifest": "~/isaacsim/assets/textures/polyhaven/manifest.json",
@@ -91,7 +94,10 @@
       "shelf-leg-a": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
       "shelf-leg-b": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
       "cantilever-plank": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine", "metal-plate", "metal-rusty", "metal-green-rust"],
-      "cantilever-base": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"]
+      "cantilever-base": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
+      "overhead-bar": ["metal-plate", "metal-rusty", "metal-green-rust", "wood-walnut", "wood-ash", "wood-pine"],
+      "bar-post-a": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"],
+      "bar-post-b": ["wood-walnut", "wood-ash", "wood-bamboo", "wood-cherry", "wood-natural-walnut", "wood-pine"]
     },
     "tileScale": 1.0
   },

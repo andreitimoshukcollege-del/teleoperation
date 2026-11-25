@@ -524,7 +524,7 @@ namespace Teleop.Eval.JointDrive
         /// The tucked poses a way back may go through (<see cref="TryApproach"/>): home's shoulder, elbow and wrist pitch, and that lifted at
         /// the shoulder by 10 and 20 degrees with the elbow folded as much, the yaw and roll left to the way.
         /// </summary>
-        internal static readonly (float Proximal, float Distal, float Wrist)[] TuckedPoses = { (0f, 0f, 0f), (10f, -10f, 0f), (20f, -20f, 0f) };
+        internal static readonly (float Proximal, float Distal, float Wrist)[] TuckedPoses = { (0f, 0f, 0f), (10f, -10f, 0f), (20f, -20f, 0f), (0f, 0f, -30f), (0f, 0f, 30f), (-15f, 15f, 0f), (30f, -15f, -30f) };
 
         private static bool TryReachTucked(in RobotArmProfile profile, ArmCollisionModel model, in ArmPose from, in ArmPose to, List<(ArmPose, bool)> via)
         {

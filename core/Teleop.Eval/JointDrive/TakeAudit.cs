@@ -67,6 +67,9 @@ namespace Teleop.Eval.JointDrive
             var byModel = new ContactTally();
             var phys = new ContactTally();
             var byModelEvents = new ContactTally();
+            var byMovingEvents = new ContactTally();
+            var toolBias = new List<double>();
+            var jointBias = new[] { new List<double>(), new List<double>(), new List<double>(), new List<double>(), new List<double>() };
             var physEvents = new ContactTally();
             var match = new int[2, 3]; // [other, accident] x [both, only the model, only physics]
             int physicsMerged = 0;
@@ -285,6 +288,37 @@ namespace Teleop.Eval.JointDrive
                     }
                 }
 
+                // The same follower against the objects where physics had them at each moment (WO): what the model would say had it known
+                // which objects the take moved; and where the measured arm's tool point is against the follower's, at each frame.
+                var movingEvents = new MixedDryRun.ContactEvents();
+                var movingInside = new Dictionary<int, bool>();
+                int fi = 0;
+                foreach (Sample s in follow)
+                {
+                    List<SafetyObject> now = ObjectsAt(s.T);
+                    arm.At(s.Pose, s.Gripper);
+                    foreach (SafetyObject o in now)
+                    {
+                        if (o.Scenery || new System.Numerics.Vector2(o.Center.X, o.Center.Y).Length() - MathF.Max(o.HalfExtents.X, o.HalfExtents.Y) >= 0.45f) continue;
+                        bool was = movingInside.TryGetValue(o.Id, out bool w) && w;
+                        bool touch = arm.Touching(o, out ArmLink link, out _);
+                        if (!touch && was) movingEvents.Stop(o.Id, s.T);
+                        if (touch && !was && movingEvents.Begin(o.Id, s.T))
+                            byMovingEvents.Add(moves.Any(m => IsAccident(m.Kind) && s.T >= m.Start && s.T <= m.End + lag), arm.Tool.Z, link == ArmLink.Gripper ? "gripper" : link.ToString().ToLowerInvariant());
+                        movingInside[o.Id] = touch;
+                    }
+                }
+
+                foreach (Sample m in meas)
+                {
+                    while (fi + 1 < follow.Count && follow[fi + 1].T <= m.T) fi++;
+                    if (follow[fi].T > m.T || m.T < t0) continue;
+                    float zf = arm.At(follow[fi].Pose, follow[fi].Gripper).Tool.Z;
+                    float zm = arm.At(m.Pose, follow[fi].Gripper).Tool.Z;
+                    toolBias.Add((zm - zf) * 1000.0);
+                    for (int j = 0; j < 5; j++) jointBias[j].Add(DrivePlan.Joint(m.Pose, j) - DrivePlan.Joint(follow[fi].Pose, j));
+                }
+
                 var physicsOnsets = new List<(double T, int Object, bool Accident)>();
                 double lastEnd = double.NegativeInfinity;
                 int lastObject = -1;
@@ -389,6 +423,9 @@ namespace Teleop.Eval.JointDrive
             Console.WriteLine(FormattableString.Invariant($"  physics, counted the same way: {phys.Describe()}; re-touches of the same object within {MergeSeconds:0.0} s of its last onset {physicsMerged}"));
             Console.WriteLine(FormattableString.Invariant($"  as contact events (a re-touch within {MixedDryRun.ContactEvents.MergeSeconds:0.0} s of the object's last release is the same contact): the model {byModelEvents.Describe()}"));
             Console.WriteLine(FormattableString.Invariant($"    physics {physEvents.Describe()}"));
+            Console.WriteLine(FormattableString.Invariant($"    the model with the objects where physics had them at each moment: {byMovingEvents.Describe()}"));
+            Console.WriteLine("  the measured tool point's height less the follower's, mm: " + MixedDryRun.Percentiles(toolBias, "0.0") + FormattableString.Invariant($"; mean {(toolBias.Count == 0 ? 0 : toolBias.Average()):0.0}") +
+                              "; joints' mean measured less followed, rad: " + string.Join(", ", jointBias.Select(b => (b.Count == 0 ? 0 : b.Average()).ToString("0.000", CultureInfo.InvariantCulture))));
             Console.WriteLine(FormattableString.Invariant(
                 $"  onsets matched (the same object within {MatchSeconds:0.0} s): outside accidents both {match[0, 0]}, only the model {match[0, 1]}, only physics {match[0, 2]}; in an accident's span both {match[1, 0]}, only the model {match[1, 1]}, only physics {match[1, 2]}"));
             return 0;

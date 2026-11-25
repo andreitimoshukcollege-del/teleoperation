@@ -177,10 +177,10 @@ def test_a_low_camera_behind_the_robot_sees_the_workspace_through_its_body_and_i
     assert "visible" in _rules(spec, geo, p)
 
 
-def test_a_far_narrow_camera_sees_the_workspace_too_small(spec, geo):
+def test_a_far_wide_camera_sees_the_workspace_too_small(spec, geo):
     t = (0.28, 0.0, -0.1)
     p = views.place(t, 0.0, 30.0, 2.0)
-    assert "cover" in views.check(spec, geo, p, views.look_at(p, t), 640, 360, 20.0, t)
+    assert views.check(spec, geo, p, views.look_at(p, t), 640, 360, 110.0, t) == ["cover"]
 
 
 def test_two_views_along_the_same_line_are_refused_by_separation(spec, geo):

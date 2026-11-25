@@ -122,6 +122,14 @@ def main(argv=None) -> int:
     s.add_argument("--no-visibility", action="store_true",
                    help="no meta/teleop/visibility.parquet (each object's pixels per frame and camera against its silhouette, "
                         "teleop_lerobot.visibility), as builds before 2026-11-24")
+    s.add_argument("--views", action="store_true",
+                   help="the twin's view cameras too (docs/adr/0038 \"V, views\"): a video each, observation.images.view<k>, "
+                        "their intrinsics and poses in scenes.jsonl (views) and their rows in visibility.parquet. Every take "
+                        "must have been recorded with the same views. Without it, every file is as before")
+    s.add_argument("--depth-masks", default=None, metavar="WxH",
+                   help="each camera's depth (uint16 mm) and instance masks (uint16 ids), downsampled to WxH by nearest "
+                        "(e.g. 160x90), in meta/teleop/depth_masks/episode_<n>.npz (teleop_lerobot.depth_masks); the views' "
+                        "too with --views")
     s = sub.add_parser("safety-report")
     s.add_argument("datasets", nargs="+", help="safety datasets: every part of a split build, or every dataset of a train, val "
                                                 "and test set (a replay group or a layout in two of them is a fault)")
@@ -235,10 +243,18 @@ def main(argv=None) -> int:
                 stop = sidecars.StopModel.given(a.stop_time_s)
             except ValueError as e:
                 p.error(str(e))
+        depth = None
+        if a.depth_masks:
+            from .depth_masks import parse_size
+
+            try:
+                depth = parse_size(a.depth_masks)
+            except ValueError as e:
+                p.error(str(e))
         options = sidecars.Options(caption=a.caption, table_safe=a.table_safe, geometry_dir=a.geometry_dir or None, stop=stop,
                                    command_clearance=not a.no_command_clearance,
-                                   visibility=not a.no_visibility)
-        takes = [read_take(path, a.fps) for path in a.takes]
+                                   visibility=not a.no_visibility, views=a.views, depth_masks=depth)
+        takes = [read_take(path, a.fps, views=True) if a.views else read_take(path, a.fps) for path in a.takes]
         writer = LeRobotWriter(a.vcodec, crf=SAFETY_CRF if a.crf is None else a.crf, preset=SAFETY_PRESET if a.preset is None else a.preset)
         groups = safety.streams(takes)
         _log(f"building {len(takes)} episode(s) with {a.jobs} worker(s): captions {a.caption}, table contacts "
@@ -247,7 +263,8 @@ def main(argv=None) -> int:
              + (f", {a.split} datasets{' each' if len(groups) > 1 else ''}" if a.split > 1 else "") + ", unavoidable ranges "
              + (", ".join(f"{n} {t:g} s" for n, t in stop.times) if stop else "off")
              + (", command distances off" if a.no_command_clearance else ", command and pose-sample distances")
-             + f", visibility {'off' if a.no_visibility else 'on'}")
+             + f", visibility {'off' if a.no_visibility else 'on'}"
+             + (", view cameras" if a.views else "") + (f", depth and masks at {depth[0]}x{depth[1]}" if depth else ""))
         try:
             roots = safety.build_streams(writer, os.path.expanduser(a.out), takes, a.split, _log, jobs=a.jobs, options=options)
         except safety.OverlapError as e:  # nothing written: one dataset holds one collection stream (docs/adr/0038 L)

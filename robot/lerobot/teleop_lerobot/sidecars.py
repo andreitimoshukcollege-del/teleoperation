@@ -120,6 +120,12 @@ class Options:
     # meta/teleop/visibility.parquet: each object's pixels per frame and camera against its silhouette (teleop_lerobot.
     # visibility, since 2026-11-24); False: no file, as builds before
     visibility: bool = True
+    # The twin's view cameras (docs/adr/0038 "V, views", safety-build --views): their videos, their entries in scenes.jsonl
+    # (``views``) and their rows in visibility.parquet. Off: none, every file as without the option
+    views: bool = False
+    # meta/teleop/depth_masks/ (teleop_lerobot.depth_masks, safety-build --depth-masks WxH): each camera's depth and masks
+    # at (W, H). None: none
+    depth_masks: Optional[Tuple[int, int]] = None
 
     def __post_init__(self):
         if self.caption not in ("neutral", "category"):
@@ -131,7 +137,10 @@ class Options:
     def describe(self) -> Dict:
         return {"caption": self.caption, "tableSafe": self.table_safe, "geometryDir": self.geometry_dir,
                 "stopModel": None if self.stop is None else {"stopTimes": self.stop.seconds()},
-                "commandClearance": self.command_clearance, "visibility": self.visibility}
+                "commandClearance": self.command_clearance, "visibility": self.visibility,
+                # only when on, so a build without them reports exactly as before
+                **({"views": True} if self.views else {}),
+                **({"depthMasks": list(self.depth_masks)} if self.depth_masks else {})}
 
 
 @dataclass(frozen=True)
@@ -923,23 +932,32 @@ def episode(take: Take, options: Options = Options(), records: Optional[Records]
                   "surfaces": [{"id": s.get("id"), "center": s.get("center"), "size": s.get("size"), "collides": s.get("collides", True)}
                                for s in ((scene or {}).get("surfaces") or [])],
                   "cameras": cams}
+    vs = None
+    if options.views:  # docs/adr/0038 "V, views": the view cameras, beside the CM ones (robot/lerobot/README.md)
+        from . import views as V
+
+        vs = V.read(frames, take.path)
+        numbers = [int(f.timing["frame"]) for f in take.frames]
+        scene_line["views"] = [V.scene_entry(vs, c, numbers) for c in vs.cameras]
     unav = None
     if options.stop is not None:  # before the contacts the labels count (time_to_contact_s is to an obstacle's alone)
         counted_starts = sorted(s.start for s in counted)
         unav = {name: unavoidable(take, labels, counted_starts, seconds) for name, seconds in options.stop.times}
     e = Episode(take.scenario, labels, line, scene_line, contact_lines, cols, unav, flags,
-                visibility=_visibility(take, options, rec, rename) if options.visibility else None)
+                visibility=_visibility(take, options, rec, rename, vs) if options.visibility else None)
     if options.command_clearance:
         command_tables(e, take, options, host, layout_seed)
     return e
 
 
-def _visibility(take: Take, options: Options, rec: Records, rename: Dict[str, str]):
-    """The episode's visibility rows (``teleop_lerobot.visibility``); a fault in it is one row saying why, and the dataset is
-    still written."""
+def _visibility(take: Take, options: Options, rec: Records, rename: Dict[str, str], views=None):
+    """The episode's visibility rows (``teleop_lerobot.visibility``; ``views``, a ``views.Views``: the view cameras' rows
+    too); a fault in it is one row saying why, and the dataset is still written."""
     from . import visibility
 
     try:
+        if views is not None:
+            return visibility.compute(take, options.geometry_dir, rec, rename, view_records=views)
         return visibility.compute(take, options.geometry_dir, rec, rename)
     except Exception as e:  # noqa: BLE001
         return visibility.unavailable(f"{type(e).__name__}: {e}")
@@ -1302,6 +1320,32 @@ def lead_in_contact(frames) -> str:
             f"{np.percentile(lead, 95):.1f}, max {lead.max():.1f} servo units")
 
 
+def _views_line(root: str, name: str, options: Dict, episodes: int, lines: List[str], faults: List[str]) -> None:
+    """safety-report's lines for a build ``--views`` (every ``scenes.jsonl`` line has its views) and ``--depth-masks`` (every
+    episode has its file); nothing for a build without them."""
+    if options.get("views"):
+        with open(os.path.join(root, "meta", "teleop", "scenes.jsonl"), encoding="utf-8") as f:
+            scenes = [json.loads(x) for x in f if x.strip()]
+        counts = [len(s.get("views") or []) for s in scenes]
+        modes: Dict[str, int] = {}
+        for s in scenes:
+            for v in s.get("views") or []:
+                modes[v.get("mode")] = modes.get(v.get("mode"), 0) + 1
+        lines.append(f"{name}: view cameras in {sum(1 for c in counts if c)} of {len(scenes)} episode(s), "
+                     + ", ".join(f"{k} {v}" for k, v in sorted(modes.items())))
+        if not all(counts):
+            faults.append(f"{name}: built --views, but {sum(1 for c in counts if not c)} episode(s) have no views in scenes.jsonl")
+    if options.get("depthMasks"):
+        from .depth_masks import episode_path
+
+        have = [os.path.getsize(episode_path(root, e)) for e in range(episodes) if os.path.exists(episode_path(root, e))]
+        w, h = options["depthMasks"]
+        lines.append(f"{name}: depth and masks at {w}x{h} in {len(have)} of {episodes} episode(s)"
+                     + (f", {sum(have) / len(have) / 1e6:.2f} MB an episode" if have else ""))
+        if len(have) < episodes:
+            faults.append(f"{name}: built --depth-masks, but {episodes - len(have)} episode(s) have no depth_masks file")
+
+
 def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
     """What a set of safety datasets holds, and what is wrong with it, from their files alone: (lines to print, faults).
     Give it one build's datasets (every part of a split one), or every dataset of a train, val and test set at once: the
@@ -1354,7 +1398,8 @@ def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
         if ranges_.get("unsafe_ranges") != manual:
             faults.append(f"{name}: safety_ranges.json's ranges differ from manual_safety_labels.json's")
         with open(os.path.join(teleop, "report.json"), encoding="utf-8") as f:
-            lines.append(mix(name, json.load(f)))
+            rep_ = json.load(f)
+        lines.append(mix(name, rep_))
         with open(os.path.join(teleop, "episodes.jsonl"), encoding="utf-8") as f:
             eps = [json.loads(x) for x in f if x.strip()]
         for e in eps:
@@ -1375,6 +1420,7 @@ def check_datasets(roots: Sequence[str]) -> Tuple[List[str], List[str]]:
         from .visibility import dataset_line
 
         lines.append(dataset_line(root, name) or f"{name}: no visibility")
+        _views_line(root, name, rep_.get("options") or {}, len(eps), lines, faults)
         unavoidable_path = os.path.join(teleop, "unavoidable_ranges.json")
         if not os.path.exists(unavoidable_path):
             lines.append(f"{name}: no unavoidable ranges")

@@ -286,8 +286,18 @@ def unavailable(why: str) -> Visibility:
     return Visibility(cols)
 
 
-def compute(take, geometry_dir: Optional[str], records=None, rename: Optional[Dict[str, str]] = None) -> Visibility:
-    """The take's rows (see the module's notes), from its own files (``records``: ``sidecars.read_records``' if read)."""
+def view_cameras(view_records) -> List[View]:
+    """The twin's view cameras (``teleop_lerobot.views.Views``: docs/adr/0038 "V, views") as :class:`View` s in the base frame,
+    each at its ``VW`` pose (a moving one's loop centre: :func:`compute` poses it per frame from ``VP``)."""
+    return [View(c.name, c.name, c.width, c.height, c.fx, c.fy, c.cx, c.cy, c.near, _quat(c.pose[3:7]), np.array(c.pose[:3], float),
+                 None, "mask" in c.streams) for c in view_records.cameras]
+
+
+def compute(take, geometry_dir: Optional[str], records=None, rename: Optional[Dict[str, str]] = None,
+            view_records=None) -> Visibility:
+    """The take's rows (see the module's notes), from its own files (``records``: ``sidecars.read_records``' if read).
+    ``view_records`` (``teleop_lerobot.views.Views``, a build ``--views``): the view cameras' rows too, after the ``CM``
+    cameras', a static or fixed view at its ``VW`` pose and a moving one at each frame's ``VP`` pose."""
     from . import sidecars
 
     rec = records or sidecars.read_records(take.path)
@@ -301,6 +311,10 @@ def compute(take, geometry_dir: Optional[str], records=None, rename: Optional[Di
     cams = views(rec.frames, rename)
     if not cams:
         return unavailable("no camera with intrinsics and a pose (CM)")
+    moving = set()
+    if view_records is not None:
+        cams = cams + view_cameras(view_records)
+        moving = {c.name for c in view_records.cameras if c.mode == "moving"}
     gdir = os.path.expanduser(geometry_dir) if geometry_dir else None
     if gdir and not os.path.isdir(gdir):
         gdir, no_dir = None, f"no geometry at {geometry_dir}"
@@ -400,7 +414,13 @@ def compute(take, geometry_dir: Optional[str], records=None, rename: Optional[Di
                         except ValueError as e:
                             why_v = f"frame {n}'s {v.recorded} mask: {e}"
                 pose_cam, why_cam = None, None
-                if v.mount:
+                if v.name in moving:
+                    vp = view_records.poses.get(n, {}).get(v.name)
+                    if vp is None:
+                        why_cam = f"frame {n} has no VP pose for {v.name}"
+                    else:
+                        pose_cam = (_quat(vp[3:7]), np.array(vp[:3], float))
+                elif v.mount:
                     link = mount_pose.get((v.mount, n))
                     if link is None:
                         why_cam = mount_why or f"frame {n} has no joint values (VQ)"
@@ -424,7 +444,7 @@ def compute(take, geometry_dir: Optional[str], records=None, rename: Optional[Di
                     elif pose_cam is None:
                         reasons.append(why_cam)
                     else:
-                        key = None if v.mount else (v.name, o.id, pose, factor)
+                        key = None if (v.mount or v.name in moving) else (v.name, o.id, pose, factor)
                         expected = cache.get(key) if key is not None else None
                         if expected is None:
                             expected = expected_px(o, pose, factor, pose_cam[0], pose_cam[1], v)
@@ -613,4 +633,4 @@ def dataset_line(root: str, name: str) -> Optional[str]:
 
 
 __all__ = ["COLUMNS", "METHOD", "OBSTACLE_ROLES", "SEEN", "View", "Visibility", "compute", "dataset_line", "expected_px",
-           "project_hull", "silhouette", "spans", "summary", "summary_line", "unavailable", "views", "write"]
+           "project_hull", "silhouette", "spans", "summary", "summary_line", "unavailable", "view_cameras", "views", "write"]

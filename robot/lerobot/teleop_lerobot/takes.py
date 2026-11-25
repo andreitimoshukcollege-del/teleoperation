@@ -60,6 +60,7 @@ class Camera:
     width: int
     height: int
     sidecar: str  # path of its rgb sidecar
+    view: bool = False  # a view camera (docs/adr/0038 "V, views": VW, no CM), only in a take read with views
 
 
 @dataclass
@@ -287,8 +288,13 @@ def _fr3_order(profile: dict) -> Tuple[List[int], Dict[int, float]]:
     return motors, travel
 
 
-def read_take(path: str, fps: int = 15) -> Take:
-    """Reads a complete take into its episode frames. Raises ``TakeError`` (or ``JlogError``) when it cannot be one."""
+def read_take(path: str, fps: int = 15, views: bool = False) -> Take:
+    """Reads a complete take into its episode frames. Raises ``TakeError`` (or ``JlogError``) when it cannot be one.
+
+    ``views`` (``safety-build --views``): the take's view cameras (docs/adr/0038 "V, views", ``VS``/``VW``) join its cameras
+    after the ``CM`` ones, each frame's view parts taken from the same recorded frame. The frames are chosen by the ``CM``
+    cameras alone, as without views, so the episode's frames and its ``CM`` cameras' pictures are the same either way; a take
+    without views, or a chosen frame lacking a view's colour, is refused."""
     with open(os.path.join(path, "session.json"), encoding="utf-8") as f:
         meta = json.load(f)
     scenario = meta.get("scenario") or {}
@@ -376,6 +382,18 @@ def read_take(path: str, fps: int = 15) -> Take:
             cameras.append(Camera(r[0], int(r[1]), int(r[2]), os.path.join(path, folder, r[0] + ".rgb.frames")))
     if not cameras:
         raise TakeError(f"{path}: {writer}.jlog has no camera recording rgb")
+    view_cameras: List[Camera] = []
+    if views:
+        from .views import ViewsError, read as read_views
+
+        try:
+            vs = read_views(frames_log, path)
+        except ViewsError as e:
+            raise TakeError(f"{e}; a --views build needs every take recorded with view cameras") from e
+        view_cameras = [Camera(c.name, c.width, c.height, os.path.join(path, folder, c.name + ".rgb.frames"), view=True)
+                        for c in vs.cameras if "rgb" in c.streams]
+        if [c.name for c in view_cameras] != [c.name for c in vs.cameras]:
+            raise TakeError(f"{path}: a view camera records no rgb")
 
     candidates = []  # (t, frame, parts, state, action, stateAge, actionAge)
     seen = set()
@@ -390,8 +408,9 @@ def read_take(path: str, fps: int = 15) -> Take:
                 parts[cam] = (int(offset), int(length))
         if any(c.name not in parts for c in cameras):
             continue
-        # Only the CM cameras: a view camera's streams (docs/adr/0038 "V, views", no CM) are not the episode's.
-        parts = {c.name: parts[c.name] for c in cameras}
+        # Only the CM cameras: a view camera's streams (docs/adr/0038 "V, views", no CM) are not the episode's, unless the
+        # take is read with views; even then they never decide which frames are chosen.
+        parts = {c.name: parts[c.name] for c in cameras + [v for v in view_cameras if v.name in parts]}
         j = joints(t)
         if j is None:
             continue
@@ -402,7 +421,7 @@ def read_take(path: str, fps: int = 15) -> Take:
     candidates.sort(key=lambda c: c[0])
 
     take = Take(path, str(meta.get("id", os.path.basename(path))), robot, source, scenario["name"],
-                scenario.get("description") or scenario["name"], names, fps, cameras)
+                scenario.get("description") or scenario["name"], names, fps, cameras + view_cameras)
     # Each grid point takes the recorded frame nearest it, if one is within half a step; else the last frame again,
     # flagged as filled. (Until 2026-11-15 it took the newest frame at most 1 ms past the point: the twin's frames wobble
     # by ~3 ms, so at 30 fps written as 15 that picked frames 1, 2 or 3 apart, a 5 Hz judder in 80 of 85 episodes.)
@@ -422,6 +441,10 @@ def read_take(path: str, fps: int = 15) -> Take:
             "stateAge": int(state_age), "actionAge": int(action_age)}))
         previous = chosen
         k += 1
+    for v in view_cameras:
+        lacking = [f.timing["frame"] for f in take.frames if v.name not in f.parts]
+        if lacking:
+            raise TakeError(f"{path}: recorded frame(s) {lacking[:5]} of the episode have no {v.name}.rgb part")
     return take
 
 

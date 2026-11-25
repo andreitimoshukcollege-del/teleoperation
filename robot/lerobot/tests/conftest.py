@@ -77,13 +77,17 @@ def session_json(take, fmt, version, source, scenario="reach", description="reac
 
 
 def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{cam}-{n}".encode(), extra=(), vq=None, cm=None,
-               shift=0, views=()):
+               shift=0, views=(), payload=None, view_pose=None):
     """``vfs``: (t ns, frame, stateSensed, flags). Every camera's rgb, one record per frame. ``extra``: more rows (``[tag,
     ...]``) after the cameras'; ``vq(n, sensed)``: frame n's posed joints ({joint: value}), written as a ``VQ`` before its
     ``VF``; ``cm(camera)``: that camera's ``CM`` row instead of the default. ``shift``: every time written that many ns later
     (``vq`` is given the frame's time before it). ``views``: view cameras (docs/adr/0038 "V, views"), no ``CM`` row: each
-    frame also carries their rgb, depth and mask parts and a ``VP`` with their poses, as the renderer writes them."""
+    frame also carries their rgb, depth and mask parts and a ``VP`` with their poses, as the renderer writes them.
+    ``payload(camera, stream, n)``: a frame's depth or mask bytes (and a view's rgb), and every camera then records its
+    depth and mask too; ``view_pose(view, n)``: a view's ``VP`` pose at frame n (x y z qw qx qy qz)."""
     sidecars = {c: Sidecar(os.path.join(take, folder, c + ".rgb.frames")) for c in cameras}
+    if payload is not None:
+        sidecars.update({f"{c}.{st}": Sidecar(os.path.join(take, folder, f"{c}.{st}.frames")) for c in cameras for st in ("depth", "mask")})
     view_sidecars = {f"{v}.{st}": Sidecar(os.path.join(take, folder, f"{v}.{st}.frames")) for v in views for st in ("rgb", "depth", "mask")}
     rows = [(cm(c) if cm else None) or ["CM", c, 64, 48, 1, 1, 32, 24, 0.01, 6, 0, 0, 0, 1, 0, 0, 0, "", "rgb;depth;mask", "base"]
             for c in cameras]
@@ -93,13 +97,19 @@ def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{
         for c in cameras:
             off, length = sidecars[c].add(image(c, n))
             parts.append(f"{c}.rgb:{off}:{length}")
+            if payload is not None:
+                for st in ("depth", "mask"):
+                    off, length = sidecars[f"{c}.{st}"].add(payload(c, st, n))
+                    parts.append(f"{c}.{st}:{off}:{length}")
         for name, sc in view_sidecars.items():
-            off, length = sc.add(f"{name}-{n}".encode())
+            off, length = sc.add(payload(*name.split("."), n) if payload is not None else f"{name}-{n}".encode())
             parts.append(f"{name}:{off}:{length}")
         if vq is not None:
             rows.append(moved(["VQ", n, sensed, ";".join(f"{k}:{v}" for k, v in sorted(vq(n, sensed).items()))], shift))
         if views:
-            rows.append(moved(["VP", n, sensed, ";".join(f"{v}:1.0:{0.1 * n!r}:0.8:1.0:0.0:0.0:0.0" for v in views)], shift))
+            pose = view_pose or (lambda v, k: (1.0, 0.1 * k, 0.8, 1.0, 0.0, 0.0, 0.0))
+            rows.append(moved(["VP", n, sensed, ";".join(f"{v}:" + ":".join(repr(float(x)) for x in pose(v, n)) for v in views)],
+                              shift))
         rows.append(moved(["VF", t, n, sensed, flags, ";".join(parts)], shift))
     for s in list(sidecars.values()) + list(view_sidecars.values()):
         s.close()
@@ -120,7 +130,8 @@ def relay_pulse(motor, value):
 
 def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", source="isaac", gap=None, image=None,
                   cameras=("third-left", "wrist"), extra=(), jitter=0.0, isaac_extra=(), vq=None, cm=None, scene=None,
-                  session=None, dropped=0, at_s=0.0, commands=None, relay=relay_pulse, host_check=None, views=()):
+                  session=None, dropped=0, at_s=0.0, commands=None, relay=relay_pulse, host_check=None, views=(), payload=None,
+                  view_pose=None):
     """A JetRover take: commands accepted from 1.0 to 3.0 s, RO and RI every 20 ms, frames at 30 fps from 0.5 to
     3.5 s (the first two with B). ``gap``: (from, to) seconds with no frame recorded. ``extra``: more robothost.jlog rows
     (``[tag, t, ...]``), such as contacts (WC) and object poses (WO). ``jitter``: each frame's time wobbles by up to that
@@ -189,7 +200,8 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
     folder = "camera" if source == "robot" else "isaac"
     frames_log(take, "camera" if source == "robot" else "isaac", folder, sid,
                ["front"] if source == "robot" else list(cameras), vfs,
-               **({"image": image} if image else {}), extra=isaac_extra, vq=vq, cm=cm, shift=shift, views=views)
+               **({"image": image} if image else {}), extra=isaac_extra, vq=vq, cm=cm, shift=shift, views=views, payload=payload,
+               view_pose=view_pose)
     finish(take)
     return take
 

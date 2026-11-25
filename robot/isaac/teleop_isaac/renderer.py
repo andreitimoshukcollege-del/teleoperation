@@ -38,6 +38,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from . import appearance as appearance_module
 from . import backdrops as backdrops_module
+from . import depth_model as depth_model_module
 from . import clutter as clutter_module
 from . import environments as environments_module
 from . import materials as materials_module
@@ -903,6 +904,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     a.add_argument("--views", default="", help="a views spec (robot/isaac/views/recon.json): extra cameras placed at seeded random "
                                                 "viewpoints at every change; default: the scene file's views section, if any")
     a.add_argument("--views-count", type=int, default=-1, help="how many view cameras (-1: the spec's; 0: none)")
+    # A Femto Bolt-like depth stream beside the exact depth (docs/adr/0039): opt-in. Without --depth-model the renderer records
+    # exactly as before.
+    a.add_argument("--depth-model", default="", help="a depth model file (robot/isaac/depth_models/femto-nfov.json): records "
+                                                      "<camera>.depth_femto beside the exact depth for the cameras it names")
     args = a.parse_args(argv)
     if not -1 <= args.views_count <= 8:
         a.error("--views-count must be in [-1, 8]")
@@ -1385,6 +1390,29 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         print(f"[render] views: {view_spec.count} view camera(s) from {args.views or 'the scene file'} (sha256 "
               f"{view_spec.sha256[:12]}), sizes {[(view_spec.slot(k).width, view_spec.slot(k).height) for k in range(view_spec.count)]}, "
               f"recording {list(view_spec.record)}, moving share {view_spec.moving.share if view_spec.moving else 0}", flush=True)
+    # --- a Femto Bolt-like depth sensor beside chosen cameras (docs/adr/0039): only with --depth-model -------------------------
+    femto = depth_model_module.load(args.depth_model, cameras)
+    femto_rigs: Dict[int, tuple] = {}  # camera index -> (rig, (RtxCamera, CameraSensor) of its depth sensor, or None for "same")
+    if femto is not None:
+        fgeo = depth_model_module.geometry(femto.mode)
+        flocal = depth_model_module.sensor_local(femto)
+        for i, c in enumerate(cameras):
+            rig = femto.rig(c["id"])
+            if rig is None or rig.geometry == "same":
+                if rig is not None:
+                    femto_rigs[i] = (rig, None)
+                continue
+            fp, fq = depth_model_module.compose(nominal[i], flocal)
+            fattrs = {"focalLength": APERTURE_MM * fgeo.render_f / fgeo.render_width, "horizontalAperture": APERTURE_MM,
+                      "verticalAperture": APERTURE_MM * fgeo.render_height / fgeo.render_width, "clippingRange": Gf.Vec2f(0.05, 10.0)}
+            fcam = RtxCamera(f"/World/Cameras/{prim_name('Femto', c['id'])}", positions=[list(fp)], orientations=[list(fq)],
+                             attributes=fattrs)
+            femto_rigs[i] = (rig, (fcam, CameraSensor(fcam, resolution=(fgeo.render_height, fgeo.render_width),
+                                                      annotators=["rgb", "distance_to_image_plane"])))
+        print(f"[render] depth model {femto.name} ({args.depth_model}, sha256 {femto.sha256[:12]}): "
+              + "; ".join(f"{r.camera} {r.geometry} {list(r.streams)}" for r, _ in femto_rigs.values())
+              + f"; renders {fgeo.render_width}x{fgeo.render_height} at f {fgeo.render_f:.1f} px for {femto.mode.width}x{femto.mode.height}"
+              + (", and every view camera's depth (same)" if femto.views else ""), flush=True)
     app_utils.play(commit=True)  # sensors deliver only while the timeline plays; with Physics at "none" nothing steps
 
     def read(sensor, name):
@@ -1516,6 +1544,9 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             cam = sensors[i][0]
             np_, nq = appearance_module.jittered(nominal[i], j)
             cam.set_world_poses(positions=[list(np_)], orientations=[list(nq)])
+            if femto_rigs.get(i, (None, None))[1] is not None:  # its depth sensor moves with it (docs/adr/0039)
+                fp, fq = depth_model_module.compose((np_, nq), depth_model_module.sensor_local(femto))
+                femto_rigs[i][1][0].set_world_poses(positions=[list(fp)], orientations=[list(fq)])
             cp, cq = (np.asarray(x.numpy() if hasattr(x, "numpy") else x, float).reshape(-1) for x in cam.get_world_poses())
             # Isaac keeps a pose in float32: it reads back within about 1e-4 mm and 1e-5 degrees. (Measured as twice the arc cosine
             # of a dot product, the same pose read back 0.02 degrees off on the twin; appearance.turn_deg measures it properly.)
@@ -1558,6 +1589,66 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         for v in views_now:
             out.append(("VW", *views_module.vw_fields(view_spec, v, backdrop["change"], view_change["gains"].get(v.id, 1.0))))
         return out
+
+    def femto_records() -> List[tuple]:
+        """FM, one per modelled stream (docs/adr/0039, trainer/contract/SESSION_FORMAT.md); none without --depth-model. The
+        depth sensor of a camera (geometry sensor) stands at the model's extrinsic from the pose CM records, in CM's frame."""
+        if femto is None:
+            return []
+        out, dm = [], depth_model_module
+        seed, change = backdrop_seed, backdrop["change"]
+        for i, (rig, sensor) in sorted(femto_rigs.items()):
+            c, pose = specs[i], camera_used[i]
+            frame_kind = "mount" if c["mount"] else "base"
+            cm_intr = {k: c[k] for k in ("width", "height", "fx", "fy", "cx", "cy")}
+            if sensor is None:
+                out.append(("FM", *dm.fm_fields(femto, rig, dm.STREAM, cm_intr, pose, frame_kind, seed, change, (c["height"], c["width"]))))
+                continue
+            fp, fq = dm.compose((pose[:3], pose[3:]), dm.sensor_local(femto))
+            shape = (femto.mode.height, femto.mode.width)
+            for st in rig.streams:
+                if st == dm.STREAM:
+                    out.append(("FM", *dm.fm_fields(femto, rig, st, dm.raw_intrinsics(femto.mode), (*fp, *fq), frame_kind, seed, change, shape)))
+                else:
+                    out.append(("FM", *dm.fm_fields(femto, rig, st, cm_intr, pose, frame_kind, seed, change, shape)))
+        if femto.views and view_spec is not None and "depth" in view_spec.record:
+            for v in views_now:
+                p, q = v.centre_pose()
+                rig = dm.Rig(v.id, "same", (dm.STREAM,), False)
+                out.append(("FM", *dm.fm_fields(femto, rig, dm.STREAM, {"width": v.width, "height": v.height, **v.intrinsics},
+                                                (*p, *q), "base", seed, change, (v.height, v.width))))
+        return out
+
+    def femto_jobs(i: int, frame_no: int, dep, rgb) -> Dict[str, tuple]:
+        """Camera i's modelled streams this frame (docs/adr/0039), as jobs the encode threads finish (depth_model.finish).
+        Copies of the arrays read: Isaac may reuse its buffers before a job runs."""
+        dm = depth_model_module
+        rig, sensor = femto_rigs[i]
+        c = specs[i]
+        if sensor is None:  # geometry same: the camera's own exact depth and colour
+            if dep is None:
+                return {}
+            fr = dm.same_frame(femto, rig.mask, c["id"], c, backdrop_seed, backdrop["change"], frame_no)
+            return {f"{c['id']}.{dm.STREAM}": ("femto", dm.Job(femto, fr, np.array(dep, np.float32), rgb), 0)}
+        fdep, _ = read(sensor[1], "distance_to_image_plane")
+        if fdep is None:
+            session_record("FD", time.monotonic_ns(), frame_no, f"{c['id']}.{dm.STREAM}-no-image")
+            return {}
+        frgb = read(sensor[1], "rgb")[0] if femto.reflectance["source"] == "luminance" else None
+        fdep = np.array(fdep, np.float32)
+        frgb = None if frgb is None else np.array(frgb[..., :3], np.uint8)
+        fr = dm.sensor_frame(femto, c["id"], backdrop_seed, backdrop["change"], frame_no)
+        return {f"{c['id']}.{st}": ("femto", dm.Job(femto, fr, fdep, frgb, raw=True, aligned_to=c if st == dm.ALIGNED else None), 0)
+                for st in rig.streams}
+
+    def femto_view_job(v, frame_no: int, dep, rgb) -> Dict[str, tuple]:
+        """A view camera's modelled depth (geometry same, no illumination mask; docs/adr/0039), with --depth-model's views."""
+        if femto is None or not femto.views:
+            return {}
+        dm = depth_model_module
+        fr = dm.same_frame(femto, False, v.id, {"width": v.width, "height": v.height, **v.intrinsics}, backdrop_seed,
+                           backdrop["change"], frame_no)
+        return {f"{v.id}.{dm.STREAM}": ("femto", dm.Job(femto, fr, np.array(dep, np.float32), rgb), 0)}
 
     def apply_lighting() -> None:
         """This change's light: every scene light's colour temperature, and the key light's direction, strength, size and
@@ -1741,6 +1832,9 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     streams = [f"{c['id']}.{st}" for c in specs for st in c["record"]]
     if view_spec is not None:
         streams += [f"view{k}.{st}" for k in range(view_spec.count) for st in view_spec.record]
+    # docs/adr/0039 (none without --depth-model); a view camera gets one only if it records depth
+    streams += depth_model_module.streams(femto, [f"view{k}" for k in range(view_spec.count)]
+                                          if view_spec is not None and "depth" in view_spec.record else [])
     scene_sha = hashlib.sha256(open(args.scene, "rb").read()).hexdigest()
 
     def session_record(tag, *fields):
@@ -1777,6 +1871,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             out.append(("CL", backdrop["change"], clutter_module.cl_items(clutter_now)))
         out.extend(appearance_records())  # none without an appearance section
         out.extend(view_records())  # none without views
+        out.extend(femto_records())  # none without --depth-model
         if world_snapshot["objects"]:
             out.append(("OL", world_snapshot["sensed"], world_snapshot["revision"], world_snapshot["objects"]))
         out.append(("SZ", max(0, world_sizes["revision"]), world_sizes["sizes"]))
@@ -1810,6 +1905,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             out["environment.json"] = (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")
         if view_spec is not None:
             out["views.json"] = views_module.views_json(view_spec, os.path.basename(args.views) if args.views else "scene file")
+        if femto is not None:
+            out["depth_model.json"] = depth_model_module.model_json(femto, os.path.basename(args.depth_model))
         return out
 
     kept = {"in_a_row": 0}  # sessions in a row that kept the look before them (keep_look)
@@ -1846,12 +1943,15 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     # With view cameras, a frame's streams are encoded on a pool of threads (Pillow and OpenCV let go of the GIL while they
     # encode): one thread spends about 18 ms a frame on the scene's three cameras, and a 1280x720 view adds about 24 ms.
-    encode_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="encode") if view_spec is not None else None
+    # The depth model (docs/adr/0039) runs there too, about 21 ms a camera's frame on one thread.
+    encode_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="encode") if view_spec is not None or femto is not None else None
 
     def encode_one(item):
         import cv2
 
         name, (kind, a, quality) = item
+        if kind == "femto":  # docs/adr/0039: the modelled depth, made here off the render thread, then a 16-bit PNG
+            a = depth_model_module.finish(a)
         if kind == "rgb":
             buf = io.BytesIO()
             Image.fromarray(a).save(buf, "JPEG", quality=quality)
@@ -2163,12 +2263,14 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             if keep:
                 if "rgb" in c["record"]:
                     arrays[f"{c['id']}.rgb"] = ("rgb", rgb, c["recordQuality"])
-                depth_now = None
+                depth_now, dep = None, None
                 if "depth" in c["record"]:
                     dep, _ = read(sensor, "distance_to_image_plane")
                     if dep is not None:
                         depth_now = depth_mm(dep)
                         arrays[f"{c['id']}.depth"] = ("png", depth_now, 0)
+                if i in femto_rigs:
+                    arrays.update(femto_jobs(i, frames, dep, rgb))
                 if "mask" in c["record"]:
                     seg, info = read(sensor, "semantic_segmentation")
                     if seg is not None:
@@ -2192,6 +2294,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                     dep, _ = read(sensor, "distance_to_image_plane")
                     if dep is not None:
                         arrays[f"{v.id}.depth"] = ("png", depth_mm(dep), 0)
+                        arrays.update(femto_view_job(v, frames, dep, rgb))  # docs/adr/0039; nothing without --depth-model
                 if "mask" in view_spec.record:
                     seg, info = read(sensor, "semantic_segmentation")
                     if seg is not None:

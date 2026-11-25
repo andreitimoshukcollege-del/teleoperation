@@ -1,0 +1,41 @@
+{
+ "format": "teleop-depth-model",
+ "version": 1,
+ "name": "femto-bolt-nfov-unbinned",
+ "about": "An Orbbec Femto Bolt in NFOV unbinned mode (640x576, 30 fps), the mode just femto-record records, behind each of the twin's two third-person cameras (the real left/right Femto Bolts' analogs). Every number and its source: docs/adr/0039. Until our own Femto Bolts' depth is recorded, the camera model, distortion and extrinsic are typical Azure Kinect units' (the same depth module): replace them from femto-record's calibration.json (python -m teleop_isaac.depth_model --from-calibration).",
+ "mode": {
+  "name": "nfov-unbinned",
+  "width": 640,
+  "height": 576,
+  "fx": 515.9885,
+  "fy": 515.4943,
+  "cx": 326.7456,
+  "cy": 326.086,
+  "distortion": {"k1": -0.3435, "k2": 0.2326},
+  "renderScale": 0.86,
+  "minM": 0.2,
+  "maxM": 5.46
+ },
+ "illumination": {
+  "polygonTan": [[0.386, -0.8], [0.685, -0.248], [0.679, 0.052], [0.333, 0.62], [-0.334, 0.62], [-0.715, 0.002], [-0.719, -0.194], [-0.386, -0.8]]
+ },
+ "depthToColour": {
+  "rotation": [[0.9999912977218628, 0.00413146335631609, 0.0005508982576429844],
+               [-0.004166470840573311, 0.9944630265235901, 0.1050041913986206],
+               [-0.00011402699601603672, -0.10500557720661163, 0.9944716095924377]],
+  "translationM": [-0.0319669172167778, -0.001937559456564486, 0.004245358053594828]
+ },
+ "noise": {"sigma0Mm": 0.117, "sigma1MmPerM": 0.554, "staticMm": 0.85, "kernelPx": 4},
+ "systematic": {"offsetSdMm": 2.0, "scaleSd": 0.001, "fieldSdMm": 1.0},
+ "reflectance": {"source": "luminance", "lo": 0.15, "hi": 0.9, "white": 0.8, "constant": 0.5},
+ "signal": {"a50": 0.0036, "width": 0.35, "saturation": null},
+ "grazing": {"deg50": 86.2, "widthDeg": 3.4},
+ "dropout": 0.003,
+ "edges": {"blurPx": 3, "windowPx": 5, "jumpMinMm": 40, "bg": 1.0, "fg": 0.0, "r50Mm": 300, "rWidthMm": 30, "mixMm": 250, "mixWidthMm": 20},
+ "quantMm": 1,
+ "cameras": [
+  {"camera": "third-left", "geometry": "sensor", "streams": ["depth_femto"]},
+  {"camera": "third-right", "geometry": "sensor", "streams": ["depth_femto"]}
+ ],
+ "views": false
+}

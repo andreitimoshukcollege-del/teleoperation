@@ -4363,7 +4363,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     progress "$n" building
     if just _isaac-safety-build "$name" "" "${kept[@]}"; then progress "$n" done "\"~/data/lerobot/jetrover-isaac-safety/$name\""; else progress "$n" failed; exit 1; fi
     # The takes and the dataset go to the cluster archive too (the GPU machine keeps them as its working set).
-    just cluster-archive takes/jetrover-isaac takes/jetrover-isaac-twin1 lerobot/jetrover-isaac-safety || echo "[safety] warning: the cluster archive failed; just cluster-archive retries" >&2
+    just cluster-archive takes/jetrover-isaac takes/jetrover-isaac-twin1 || echo "[safety] warning: the cluster archive failed; just cluster-archive retries" >&2
 
 # Internal: write `takes` (paths on the GPU machine, already checked) as safety datasets named `name` under `out` there (default ~/data/lerobot/jetrover-isaac-safety), with ~/repos/safety's builder (teleop_lerobot safety-build), in the lab's and world-models' label formats with the sidecars of docs/adr/0038 decision 6 (neutral captions, clearance from ~/isaacsim/assets/clearance when it is there). One dataset per takes root (docs/adr/0038 L): one twin's takes are `name`, several twins' `name`_twin0, `name`_twin1, ..., since twins record at once on one clock and a dataset must not hold takes that overlap in time. SAFETY_BUILD_ARGS, when set, adds safety-build options (just isaac-safety-build sets --split and --caption): a split build writes <dataset>_<k>of<K>. Takes of one dataset that overlap in time are refused, with nothing written and no retry. A build that fails otherwise is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept beside it. (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the *-safety groups alone.)
 [positional-arguments]
@@ -4401,6 +4401,8 @@ _isaac-safety-build name out +takes:
     done
     exit 1
     REMOTE
+    # Every safety dataset built goes to the cluster archive too (docs/explorer-cluster.md "Data from the GPU machine").
+    case "{{out}}" in ""|"~/data/"*|"$HOME/data/"*) just cluster-archive lerobot/jetrover-isaac-safety || echo "[safety] warning: the cluster archive failed; just cluster-archive lerobot retries" >&2 ;; esac
 
 # The safety datasets from the takes several batches kept, one per twin (docs/adr/0037 amendment 7, docs/adr/0038 L): the takes listed in recordings/.drive/safety-batch.kept (twin 0's batch) and safety-batch-1.kept (twin 1's), as `twins` names them, in the order they were recorded (by their UTC names), written by the GPU machine's ~/repos/safety builder as ~/data/lerobot/jetrover-isaac-safety/<name> when they are one twin's, else <name>_twin0, <name>_twin1 (default name jetrover_<UTC>_<id>, as a batch names its own), with the sidecars of docs/adr/0038 decision 6 (robot/lerobot/README.md). The twins record at once on the GPU machine's one clock, and a dataset must not hold takes that overlap in time on it: the builder writes each takes root's takes as a dataset of its own, and refuses a dataset whose takes overlap. `out` writes them under another folder there instead (absolute or ~/...). `split` above 1 writes that many smaller datasets of each instead, <dataset>_<k>of<split>, split by layout (a replay group and a layout never on two sides; docs/adr/0038 items 20 and 21), and prints each one's scenario, outcome and contact mix. `caption` is neutral (every task "move the arm") or category (the scenario's name, as datasets before 2026-11-22). A take set aside or deleted since is left out. `just isaac-safety-batch-twins` runs it after its batches; run it by hand after batches run with build=false
 [group('isaac')]
@@ -4620,7 +4622,7 @@ isaac-safety-batch-twins takes="25" seed="1" n="2" categories="all" build="true"
     [ "${#ok[@]}" -gt 0 ] || { echo "[twins] no batch kept a take: no dataset" >&2; exit 1; }
     if [ "{{build}}" != true ]; then echo "[twins] build=false: build later with just isaac-safety-build $(IFS=,; echo "${ok[*]}")"; just cluster-archive takes/jetrover-isaac takes/jetrover-isaac-twin1 || echo "[twins] warning: the cluster archive failed" >&2; exit $(( failed > 0 )); fi
     just isaac-safety-build "$(IFS=,; echo "${ok[*]}")"
-    just cluster-archive takes/jetrover-isaac takes/jetrover-isaac-twin1 lerobot/jetrover-isaac-safety || echo "[twins] warning: the cluster archive failed; just cluster-archive retries" >&2
+    just cluster-archive takes/jetrover-isaac takes/jetrover-isaac-twin1 || echo "[twins] warning: the cluster archive failed; just cluster-archive retries" >&2
     exit $(( failed > 0 ))
 
 # Build the LeRobot converter's environment on the GPU machine (docs/adr/0036), once and after robot/lerobot/requirements.txt changes: ~/isaacsim/lerobot-venv (Python 3.12) with that lerobot version, and pytest for just lerobot-test. Runs the pushed commit

@@ -222,3 +222,28 @@ def test_an_fr3_dataset_gets_them_too_with_its_sixteen_motors(scenarios, tmp_pat
     assert state["values"][7] == 0.02  # the hand's 0.5 opening as finger travel, as in observation.state
     frames = read_ledger(root)[0]["frames"]
     assert len(open(os.path.join(root, "capture_timing.jsonl")).readlines()) == frames
+
+
+def test_a_pass_that_writes_sends_the_changed_dataset_and_takes_to_the_archive(scenarios, tmp_path):
+    # The cluster archive (docs/explorer-cluster.md): the command gets the changed folders as paths under data_root.
+    import sys
+    take = jetrover_take(scenarios)
+    out = str(tmp_path / "lerobot")
+    got = tmp_path / "archived.txt"
+    script = tmp_path / "fake_archive.py"
+    script.write_text("import sys\nopen(%r, 'a').write('\\n'.join(sys.argv[1:]) + '\\n')\n" % str(got))
+    clock = {"now": time.time() + 100.0}
+    conv = Converter([scenarios], out, FakeWriter(), settle=60.0, log=lambda s: None, clock=lambda: clock["now"],
+                     archive=[sys.executable, str(script)], data_root=str(tmp_path))
+    assert conv.pass_once() == 1
+    conv._archive_proc.wait(timeout=30)
+    sent = set(got.read_text().split())
+    assert os.path.join("lerobot", "jetrover-isaac", "reach") in sent
+    assert os.path.relpath(os.path.dirname(take), str(tmp_path)) in sent
+    assert conv.pass_once() == 0 and conv._archive_proc is None  # nothing changed: nothing sent
+
+
+def test_no_archive_command_means_no_archive(scenarios, tmp_path):
+    jetrover_take(scenarios)
+    conv, clock = converter(scenarios, str(tmp_path / "lerobot"))
+    assert conv.pass_once() == 1 and conv._archive_proc is None

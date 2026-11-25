@@ -20,6 +20,7 @@ import json
 import os
 import re
 import signal
+import subprocess
 import time
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
@@ -57,8 +58,14 @@ def complete_takes(roots: Iterable[str], now: float, settle: float) -> List[str]
 
 class Converter:
     def __init__(self, roots: List[str], out: str, writer, fps: int = 15, settle: float = 60.0,
-                 log: Callable[[str], None] = print, clock: Callable[[], float] = time.time, puller=None):
+                 log: Callable[[str], None] = print, clock: Callable[[], float] = time.time, puller=None,
+                 archive: Optional[List[str]] = None, data_root: str = ""):
         self.roots, self.out, self.writer, self.puller = roots, out, writer, puller
+        # The cluster archive (docs/explorer-cluster.md "Data from the GPU machine"): a command that takes paths under
+        # data_root, run in the background after a pass changed datasets, at most one at a time; empty = off.
+        self.archive, self.data_root = list(archive or []), data_root or os.path.dirname(os.path.abspath(out))
+        self._archive_proc: Optional[subprocess.Popen] = None
+        self._archive_pending: set = set()
         self.fps, self.settle, self.log, self.clock = fps, settle, log, clock
         self.checked: Dict[Tuple[str, str], Optional[Tuple[str, str]]] = {}  # (take, content) -> (group, scenario) or None
         self.failed_rebuilds: Dict[str, Tuple] = {}
@@ -124,7 +131,39 @@ class Converter:
         return out
 
     def pass_once(self) -> int:
-        """One pass. Returns how many episodes were written."""
+        """One pass. Returns how many episodes were written; then sends what it changed to the cluster archive."""
+        changed: set = set()
+        try:
+            return self._pass(changed)
+        finally:
+            self._archive_changed(changed)
+
+    def _archive_changed(self, changed: set) -> None:
+        if not self.archive:
+            return
+        rel = {os.path.relpath(p, self.data_root) for p in changed}
+        self._archive_pending |= {r for r in rel if not r.startswith("..")}
+        if self._archive_proc is not None and self._archive_proc.poll() is None:
+            return  # one at a time; the next pass sends what piled up
+        if self._archive_proc is not None and self._archive_proc.returncode:
+            self.log(f"cluster archive: the last run exited {self._archive_proc.returncode}; its paths are retried")
+        self._archive_proc = None
+        if not self._archive_pending:
+            return
+        paths = sorted(self._archive_pending)
+        self._archive_pending = set()
+        log = os.path.join(os.path.dirname(os.path.abspath(self.out)), "..", "logs", "cluster", "watcher-archive.log")
+        try:
+            os.makedirs(os.path.dirname(log), exist_ok=True)
+            with open(log, "a", encoding="utf-8") as f:
+                self._archive_proc = subprocess.Popen(self.archive + paths, stdout=f, stderr=subprocess.STDOUT,
+                                                      stdin=subprocess.DEVNULL)
+            self.log(f"cluster archive: sending {len(paths)} folder(s) ({', '.join(paths[:4])}{' ...' if len(paths) > 4 else ''})")
+        except OSError as e:
+            self._archive_pending |= set(paths)
+            self.log(f"cluster archive: could not start {self.archive[0]}: {e!r}")
+
+    def _pass(self, changed: set) -> int:
         written = 0
         if self.puller is not None:
             try:
@@ -152,6 +191,8 @@ class Converter:
                 try:
                     lines = rebuild(self.writer, root, [self._read(t) for t in takes], self.log)
                     written += len(lines)
+                    changed.add(root)
+                    changed.update(os.path.dirname(t) for t in takes)
                     self.failed_rebuilds.pop(root, None)
                 except Exception as e:  # noqa: BLE001 - the watcher must outlive one bad dataset
                     self.failed_rebuilds[root] = signature
@@ -165,6 +206,7 @@ class Converter:
                 try:
                     line = append_take(self.writer, root, self._read(take))
                     written += 1
+                    changed.update((root, os.path.dirname(take)))
                     self.log(f"{root}: episode {line['episode']} from {take} ({line['frames']} frames, "
                              f"{line['filled']} filled)")
                 except Exception as e:  # noqa: BLE001

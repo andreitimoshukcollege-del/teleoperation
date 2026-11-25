@@ -198,10 +198,15 @@ needed for the twins, and the lab space has 11 TB.
   - `just cluster-data-status` shows sizes on both sides and the newest log.
   - `just cluster-prune <days> [true]` frees the GPU machine (below).
 - **What stores there by itself:**
-  - safety batches (`isaac-safety-batch`, `isaac-safety-batch-twins`) archive their takes and datasets when they end;
+  - **every dataset build:** each safety dataset build (`_isaac-safety-build`, under `isaac-safety-batch`,
+    `isaac-safety-batch-twins`, `isaac-safety-build`, `isaac-safety-rebuild`) archives `lerobot/jetrover-isaac-safety` when
+    it succeeds, and the LeRobot converter (`just lerobot-watch-start`) sends each dataset it changes, and that dataset's
+    takes, after every pass. The converter runs the archive in the background, one run at a time, and logs to
+    `~/logs/cluster/watcher-archive.log`;
+  - safety batches archive their takes when they end, kept or set aside;
   - `just camera-calib-record` and `just femto-record` store their recordings from the operator PC (`_cluster-store`,
     through the transfer node with the PC's key);
-  - the nightly entry catches everything else: the headset's takes, the LeRobot converter's datasets and sessions.
+  - the nightly entry, once it is installed, catches the rest: sessions, and anything a failed run left.
 - **The GPU machine keeps a working set.** Isaac and the LeRobot converter still write to its local `~/data`, because
   dataset builds and the twins need local files. `just cluster-prune 14` lists the take and session folders untouched for
   14 days whose cluster copy is identical (checksums), and `true` deletes exactly those. The user asked to see the list

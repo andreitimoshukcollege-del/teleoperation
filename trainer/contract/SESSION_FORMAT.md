@@ -327,6 +327,9 @@ Sessions from before 2026-11-04 have `head.rgb`, `head.depth`, `head.mask` and `
 With view cameras (docs/adr/0038 "V, views"), the streams also include `view<k>.rgb`, `view<k>.depth` and `view<k>.mask` for
 `view0`, `view1`, ..., in the same encodings and with the same mask ids. A view camera is not a `CM` camera: it has `VW`, and
 `VP` when it moves. A reader that knows only `CM` skips the views' parts of `VF` and the `VS`, `VW` and `VP` records.
+The safety datasets' builder (`robot/lerobot`, `teleop_lerobot safety-build`) is such a reader unless asked `--views`: then
+it reads the last `VS` and that change's `VW`, and a moving camera's pose at a recorded frame from that frame's `VP`, and takes
+each view's streams from the same `VF` as the `CM` cameras' (robot/lerobot/README.md).
 
 **Depth and masks are privileged simulator labels:** never a model input that a real robot could supply.
 

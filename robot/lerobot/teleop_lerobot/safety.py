@@ -388,7 +388,7 @@ def as_safety(take: Take, caption: str = "neutral") -> Take:
     if not any(c.name == FRONT for c in take.cameras):
         raise ValueError(f"{take.path}: no {FRONT} camera to be the front one")
     rename = {FRONT: "front"}
-    cameras = [Camera(rename.get(c.name, c.name), c.width, c.height, c.sidecar) for c in take.cameras]
+    cameras = [Camera(rename.get(c.name, c.name), c.width, c.height, c.sidecar, c.view) for c in take.cameras]
     frames = [Frame({rename.get(k, k): v for k, v in f.parts.items()}, f.state, f.action, f.timing) for f in take.frames]
     return Take(take.path, take.session_id, take.robot, take.source, take.scenario, Options(caption=caption).task(take.scenario),
                 take.names, take.fps, cameras, frames)
@@ -588,6 +588,15 @@ def build(writer, root: str, takes: Sequence[Take], log=print, jobs: int = 1, ex
             log(f"episode {line['episode']}: {take.scenario}, {len(labels)} frames, {sum(labels)} unsafe ({os.path.basename(take.path)})"
                 f", {info.line['outcome']}")
     write_labels(root, written, NOTES if options.table_safe else NOTES_TABLE)
+    if options.depth_masks:  # docs/adr/0038 "V, views": each camera's depth and masks, downsampled, an episode a file
+        from . import depth_masks
+
+        sizes = depth_masks.write_all(root, [(ep, take) for (ep, _, _), take in zip(written, takes)], options.depth_masks,
+                                      {FRONT: "front"}, jobs, executor)
+        mb = [d["bytes"] / 1e6 for d in sizes]
+        log(f"[depth-masks] {len(sizes)} episode(s) at {options.depth_masks[0]}x{options.depth_masks[1]}, cameras "
+            f"{', '.join(sizes[0]['cameras']) if sizes else '-'}: {sum(mb):.1f} MB, {sum(mb) / max(1, len(mb)):.2f} MB an episode "
+            f"({sum(mb) * 1e6 / max(1, sum(d['frames'] for d in sizes)) / 1e3:.1f} kB a frame)")
     rep = sidecars.write(root, sides, options, split_of)
     for ep, info in sides:
         if info.flags:
@@ -697,6 +706,17 @@ def build_streams(writer, out: str, takes: Sequence[Take], parts: int = 1, log=p
     if not takes:
         raise ValueError("a build needs at least one take")
     groups = streams(takes)
+    if any(c.view for t in takes for c in t.cameras):  # docs/adr/0038 "V, views": every episode's cameras one set
+        sets = {}
+        for t in takes:
+            sets.setdefault(tuple((c.name, c.width, c.height) for c in t.cameras), []).append(t.path)
+        if len(sets) > 1:
+            raise ValueError("a --views build needs every take to have the same cameras and sizes (LeRobot's features are one "
+                             "set a dataset); found " + "; ".join(f"{[f'{n} {w}x{h}' for n, w, h in k]} in {len(v)} take(s), "
+                                                                  f"e.g. {v[0]}" for k, v in sets.items()))
+    if options.depth_masks and any(t.source != "isaac" for t in takes):  # only the twin records depth and masks
+        raise ValueError("--depth-masks needs takes of the twin (isaac.jlog, depth and mask streams); "
+                         + next(t.path for t in takes if t.source != "isaac") + " is not one")
     bases = stream_roots(out, [name for name, _, _ in groups])
     there = [r for r in stream_roots(out, [name for name, _, _ in groups], parts) if os.path.exists(r)]
     if there:
@@ -793,6 +813,8 @@ def rebuild_options(root: str) -> List[str]:
     if not o.get("commandClearance"):
         out += ["--no-command-clearance"]
     out += [] if o.get("visibility") else ["--no-visibility"]
+    out += ["--views"] if o.get("views") else []
+    out += [f"--depth-masks={o['depthMasks'][0]}x{o['depthMasks'][1]}"] if o.get("depthMasks") else []
     return out
 
 

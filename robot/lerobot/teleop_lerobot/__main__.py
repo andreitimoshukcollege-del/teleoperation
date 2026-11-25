@@ -13,11 +13,16 @@
   table counted as unsafe unless ``--table-safe``, and unavoidable-contact ranges for the twin's three stop times unless
   ``--stop-time-s`` gives one or ``--no-unavoidable`` none, every command's and sampled pose's distances
   (``commands.parquet``, ``pose_samples.parquet``) unless ``--no-command-clearance``, and each object's visibility per frame
-  and camera (``meta/teleop/visibility.parquet``) unless ``--no-visibility``. One dataset per collection stream (docs/adr/0038 L): takes
+  and camera (``meta/teleop/visibility.parquet``) unless ``--no-visibility``; with ``--views`` the twin's view cameras too
+  (docs/adr/0038 "V, views"), with ``--depth-masks WxH`` every camera's downsampled depth and masks
+  (``meta/teleop/depth_masks/``). One dataset per collection stream (docs/adr/0038 L): takes
   from several takes roots (twins) become ``DATASET_twin0``, ``DATASET_twin1``, ..., each split on its own; takes of one
   dataset that overlap in time are refused (exit 3, ``[refused]`` lines naming them), and nothing is written;
 - ``safety-compare REFERENCE REBUILT``: whether a safety dataset rebuilt from a reference's first takes holds the same
   files (amendment 6; no LeRobot needed);
+- ``safety-views-check DATASET``: whether a dataset built ``--depth-masks`` agrees with its cameras' recorded poses: the
+  table's points through each base-frame camera (the room cameras, the views) land on the table's id at the depth on its
+  plane, and the arm's link boxes on its ids (``depth_masks.projection_check``; no LeRobot needed);
 - ``safety-options DATASET``: the ``safety-build`` options that rebuild a safety dataset as it was built, from its
   ``report.json`` (``just isaac-safety-build-check``; no LeRobot needed);
 - ``safety-report DATASET...``: what a set of safety datasets holds (a split build's parts, or a whole train, val and test
@@ -122,12 +127,24 @@ def main(argv=None) -> int:
     s.add_argument("--no-visibility", action="store_true",
                    help="no meta/teleop/visibility.parquet (each object's pixels per frame and camera against its silhouette, "
                         "teleop_lerobot.visibility), as builds before 2026-11-24")
+    s.add_argument("--views", action="store_true",
+                   help="the twin's view cameras too (docs/adr/0038 \"V, views\"): a video each, observation.images.view<k>, "
+                        "their intrinsics and poses in scenes.jsonl (views) and their rows in visibility.parquet. Every take "
+                        "must have been recorded with the same views. Without it, every file is as before")
+    s.add_argument("--depth-masks", default=None, metavar="WxH",
+                   help="each camera's depth (uint16 mm) and instance masks (uint16 ids), downsampled to WxH by nearest "
+                        "(e.g. 160x90), in meta/teleop/depth_masks/episode_<n>.npz (teleop_lerobot.depth_masks); the views' "
+                        "too with --views")
     s = sub.add_parser("safety-report")
     s.add_argument("datasets", nargs="+", help="safety datasets: every part of a split build, or every dataset of a train, val "
                                                 "and test set (a replay group or a layout in two of them is a fault)")
     s = sub.add_parser("safety-compare")
     s.add_argument("reference", help="a safety dataset")
     s.add_argument("rebuilt", help="one written from the first takes of the reference's meta/teleop/takes.jsonl")
+    s = sub.add_parser("safety-views-check")
+    s.add_argument("dataset", help="a safety dataset built --depth-masks (and --views)")
+    s.add_argument("--geometry-dir", default=GEOMETRY_DIR, help="the robot's kinematics, for the arm's points ('' for none)")
+    s.add_argument("--frames", type=int, default=12, help="frames checked an episode")
     s = sub.add_parser("safety-options")
     s.add_argument("dataset", help="a safety dataset")
     a = p.parse_args(argv)
@@ -137,6 +154,17 @@ def main(argv=None) -> int:
 
         print(" ".join(safety.rebuild_options(os.path.expanduser(a.dataset))))
         return 0
+
+    if a.command == "safety-views-check":
+        from .depth_masks import projection_check
+
+        result = projection_check(os.path.expanduser(a.dataset), a.geometry_dir or None, a.frames)
+        for name, c in result["cameras"].items():
+            print(f"[views-check] {name}: table id {c['tableIdShare']} of {c.get('table.onPlane', 0)} px on its plane, seen "
+                  f"through {c['seeThroughShare']}; arm ids at {c['armHitShare']} of {c.get('arm.hits', 0) + c.get('arm.misses', 0)} "
+                  f"unoccluded box centres ({c.get('arm.occluded', 0)} occluded)")
+        print("RESULT " + json.dumps(result, sort_keys=True))
+        return 1 if result["problems"] or not result["cameras"] else 0
 
     if a.command == "safety-compare":
         from . import safety
@@ -235,10 +263,18 @@ def main(argv=None) -> int:
                 stop = sidecars.StopModel.given(a.stop_time_s)
             except ValueError as e:
                 p.error(str(e))
+        depth = None
+        if a.depth_masks:
+            from .depth_masks import parse_size
+
+            try:
+                depth = parse_size(a.depth_masks)
+            except ValueError as e:
+                p.error(str(e))
         options = sidecars.Options(caption=a.caption, table_safe=a.table_safe, geometry_dir=a.geometry_dir or None, stop=stop,
                                    command_clearance=not a.no_command_clearance,
-                                   visibility=not a.no_visibility)
-        takes = [read_take(path, a.fps) for path in a.takes]
+                                   visibility=not a.no_visibility, views=a.views, depth_masks=depth)
+        takes = [read_take(path, a.fps, views=True) if a.views else read_take(path, a.fps) for path in a.takes]
         writer = LeRobotWriter(a.vcodec, crf=SAFETY_CRF if a.crf is None else a.crf, preset=SAFETY_PRESET if a.preset is None else a.preset)
         groups = safety.streams(takes)
         _log(f"building {len(takes)} episode(s) with {a.jobs} worker(s): captions {a.caption}, table contacts "
@@ -247,7 +283,8 @@ def main(argv=None) -> int:
              + (f", {a.split} datasets{' each' if len(groups) > 1 else ''}" if a.split > 1 else "") + ", unavoidable ranges "
              + (", ".join(f"{n} {t:g} s" for n, t in stop.times) if stop else "off")
              + (", command distances off" if a.no_command_clearance else ", command and pose-sample distances")
-             + f", visibility {'off' if a.no_visibility else 'on'}")
+             + f", visibility {'off' if a.no_visibility else 'on'}"
+             + (", view cameras" if a.views else "") + (f", depth and masks at {depth[0]}x{depth[1]}" if depth else ""))
         try:
             roots = safety.build_streams(writer, os.path.expanduser(a.out), takes, a.split, _log, jobs=a.jobs, options=options)
         except safety.OverlapError as e:  # nothing written: one dataset holds one collection stream (docs/adr/0038 L)

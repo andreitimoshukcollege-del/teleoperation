@@ -2548,3 +2548,52 @@ bench):
 
 **Gates** on 5dc7a10 (`scripts/gpu/gate.sh isaac lerobot`): isaac 353 passed and 8 skipped; lerobot 143 passed. No C#
 changed, so the core and bridge gates were not run. Nothing here has run in Isaac yet.
+
+**In the safety datasets (2026-11-25, world-models' items 1 and 4; branch `views-converter`).** World-models asked for the views
+and for depth and masks in the datasets they read. Both are `safety-build` options, off by default; every field is in
+`robot/lerobot/README.md`, "View cameras and depth and masks, opt-in".
+- **Decisions.**
+  - **Opt-in, and nothing else moves.** Without the options every file is the same bytes as before. With `--views` the three
+    cameras' videos and every file but `scenes.jsonl`, `visibility.parquet`, `report.json` and LeRobot's own metadata are the
+    same bytes too: the episode's frames are still chosen by the `CM` cameras alone, and each view's picture is taken from the
+    same recorded frame (a chosen frame without it refuses the take), so `filled` cannot change.
+  - **Views:** a video each, `observation.images.view<k>`, encoded as the other cameras'; their `VW` (and `VS`'s change, seed and
+    spec sha) in `scenes.jsonl` under `views`, beside `cameras`; **moving views are supported**, with the `VP` pose at every
+    episode frame (`framePoses`); and their rows in `visibility.parquet`, through that pose. Every take of a build must have the
+    same views at the same sizes (LeRobot's features are one set a dataset), checked before anything is written.
+  - **Depth and masks for every camera** (`--depth-masks WxH`, e.g. 160x90; the views' with `--views`): uint16 mm and uint16
+    ids, downsampled by **nearest, one source pixel for both**, so ids are never blended and a pixel's depth and id are one
+    surface's (a block minimum or median depth would pair one pixel's depth with another pixel's id at every edge).
+  - **Stored as a per-episode `.npz` under `meta/teleop/depth_masks/`, not LeRobot features**, written with fixed zip times so a
+    rebuild writes the same bytes. Measured on takes 187, 191 (two 640x360 views each) and 151 (none) at 160x90
+    (`scripts/gpu/depth_mask_sizes.py`):
+
+    | take | cameras | frames | `.npz` an episode | a frame | LeRobot features a frame | raw |
+    |---|---|---|---|---|---|---|
+    | 187 (moving views) | 5 | 258 | 2.65 MB (depth 2.05) | 10.3 kB | 19.1 kB, + 0.35 MB `stats.json` | 74.3 MB |
+    | 191 (fixed views) | 5 | 276 | 1.49 MB (depth 0.94) | 5.4 kB | 8.2 kB, + 0.35 MB | 79.5 MB |
+    | 151 (no views) | 3 | 269 | 0.94 MB (depth 0.65) | 3.5 kB | 6.6 kB, + 0.21 MB | 46.5 MB |
+
+    As LeRobot features they were 1.5-1.9 times the size, LeRobot read them back as int64, and every reader of the dataset
+    would decode them with every frame; `numpy.load` reads the sidecar in 0.04-0.08 s an episode.
+- **Checked on real takes** (built on the GPU machine at `c0c0c28` into `~/scratch/agent-views-converter/`, takes 187 and 191,
+  `--jobs 2`):
+  - without the options, `safety-compare` against a build at `c3503b9` (before them): the same;
+  - with both, against the build without: only LeRobot's `info.json`, `stats.json` and episodes metadata, `report.json`,
+    `scenes.jsonl` and `visibility.parquet` differ, the six video files of the three cameras are byte-identical, and LeRobot reads
+    the views back at (3, 360, 640);
+  - every `scenes.jsonl` view equals its `VW` and every moving view's `framePoses` its frames' `VP`; the arrays are (frames, 90,
+    160) uint16 and every mask id is in the take's `ID` table; `filled` 1 of 534 frames;
+  - `safety-views-check`: the table's points cast through each sampled pixel of the room cameras and the views (moving ones at
+    each frame's pose) had the table's id at 99.81-99.95% of the 38-78 thousand pixels per camera whose depth put them on its
+    plane, none seen through, and the arm's link boxes (from `VQ`) landed on its ids at 94.9-97.0% of 397-408 unoccluded centres;
+    take 185 alone (two static views): table 99.85-99.97%, none seen through, arm 90.2-98.5% of 204 (1.47 MB an episode);
+  - cost: the build took 50 s against 36 s without (two episodes, two workers); the depth and masks about 3 s an episode of
+    decoding, in the workers; the views' videos 10.2 MB against third-left's 15.0 MB.
+- **Tests** (`robot/lerobot/tests/test_views_dataset.py`, 9 cases, on a synthetic take whose depth and masks are the table
+  ray-cast through each recorded pose): a take read with views keeps its frames; the records read as SESSION_FORMAT.md says;
+  without the options nothing changes, with them only the view files are added and a rebuild writes the same bytes; the scene
+  entries equal `VW` and a moving view's poses its `VP`; the arrays are the sampled source pixels, ids kept, `filled` the
+  take's; the projection check passes and catches a view rendered 3 cm off its recorded pose; mismatched cameras are refused;
+  the `.npz` is deterministic; visibility has rows for a static view (equal to the camera it copies) and a moving one (out of
+  its frustum where its `VP` moves it away).

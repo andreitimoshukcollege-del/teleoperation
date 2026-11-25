@@ -44,6 +44,8 @@ have sent it; that is undone, and the commands as received are `commands.parquet
 | `teleop_lerobot/pull.py` | copies the real robot's complete takes into `~/data/takes/jetrover-real`, checked before they land; follows its DISCARD LAST |
 | `teleop_lerobot/safety.py` | the twin's safety datasets: each take checked (`safety-check`), labelled by physics, built (`safety-build`), compared (`safety-compare`) |
 | `teleop_lerobot/sidecars.py` | what each safety episode showed and what happened in it (the sidecars below), the layout hash, the split by layout |
+| `teleop_lerobot/views.py` | the twin's view cameras' records (`VS`, `VW`, `VP`), read only by a build `--views` |
+| `teleop_lerobot/depth_masks.py` | every camera's downsampled depth and masks (`--depth-masks`), and `safety-views-check` |
 
 Tests: `python -m pytest robot/lerobot/tests` anywhere (the LeRobot round trip is skipped without lerobot).
 
@@ -269,6 +271,61 @@ which sees them closer (docs/adr/0038 L). It costs about 1.3 s a take of about 2
 or more cameras, in one, in none, and in no pixel of any camera; each camera's share and its frustum share; and the share of
 contacts with an object whose object was at least 50% visible in at least one camera at some frame of the second before the
 contact began (and at the frame before).
+
+**View cameras and depth and masks, opt-in** (docs/adr/0038 "V, views", "In the safety datasets"; world-models' request of
+2026-11-25). Two `safety-build` options; without them every file is byte for byte as before (checked on real takes with
+`safety-compare` against a build at the commit before them).
+
+- **`--views`**: the twin's view cameras (`view0`, `view1`, ..., takes recorded with `just isaac-jetrover-host ... <views>`)
+  join the dataset beside its three cameras. Every take must have been recorded with views, the same count at the same sizes,
+  or the build refuses before writing anything (a take without views: `no view cameras (no VS record)`).
+  - **Videos:** `observation.images.view0`, `view1`, ..., encoded as the other cameras' (AV1, CRF 18, preset 8). The episode's
+    frames are chosen by the three cameras alone, exactly as without views, and each view's picture comes from the same
+    recorded frame, so `frames.parquet`'s `filled` and the three cameras' videos are the same bytes either way.
+  - **`scenes.jsonl`** gains `views`, beside `cameras`: per view `name`, `recorded`, `width`, `height`, `fx`, `fy`, `cx`, `cy`,
+    `near`, `far`, `pose` (`[x, y, z, qw, qx, qy, qz]`, base frame, the USD camera looking along its -z with +y up, as
+    `cameras`' and `CM`'s; a moving view's loop centre), `mount` (null), `poseFrame` (`base`), `streams`, `mode` (`static`,
+    `moving` or `fixed`), `specSha256` (`VS`'s: the spec's canonical JSON), `specSource` (the spec's file name), `viewsChange`
+    and `viewsSeed` (`VS`'s change and seed), `draw` (`hfovDeg`, `azimuthDeg`, `elevationDeg`, `distanceM`, `rollDeg`, `target`
+    `[x, y, z]`, `attempts`), `gain`, `motion` (a moving view's `periodS`, `azAmpDeg`, `elAmpDeg`, `distAmpM`, `targetAmpM`,
+    `phi1`..`phi4`; null otherwise), `broken` (the view rules a fixed view breaks) and `framePoses`: for a moving view its
+    pose at every episode frame (its `VP`: the pose that frame's image was rendered from), null for a static or fixed one.
+  - **`visibility.parquet`** has rows for the views too (`camera` `view0`, ...), a static or fixed view through its `pose`, a
+    moving one through each frame's `framePoses`. `safety-report`'s visibility line counts every camera in the file, the
+    views included.
+- **`--depth-masks WxH`** (e.g. `160x90`): every camera's depth and instance masks, downsampled, in
+  `meta/teleop/depth_masks/episode_<NNNNNN>.npz` (one an episode), described by `meta/teleop/depth_masks.json`. The cameras are
+  the dataset's: `third-left`, `third-right`, `front` (the wrist), and the views with `--views`. `numpy.load(path)` reads one
+  (no pickles); its arrays:
+  - `<camera>.depth`: `(frames, H, W)` uint16, millimetres to the image plane, 0 where nothing was hit (the take's depth
+    stream exactly, trainer/contract/SESSION_FORMAT.md);
+  - `<camera>.mask`: the same shape, uint16 stable ids as the take's masks (7 arm, 8 hand, 10 table, 11 bench, 15 flat
+    clutter, `100 + n` scene object `n`, 0 unlabelled);
+  - `source_frame` (int64, the recorded frame) and `filled` (bool), each frame's as `frames.parquet` and the timing files give
+    them; frame `i` of every array is the dataset's frame `i`.
+  - **Downsampling is nearest, one source pixel for both:** low-res pixel `(i, j)` is the full-res pixel `(rows[i],
+    cols[j])`, `rows[i] = floor((i + 0.5) h / H)`, `cols[j] = floor((j + 0.5) w / W)` (from 640x360 to 160x90, every 4th pixel
+    from the 3rd; `depth_masks.json` lists `rows` and `cols` per camera). So an id is always one the renderer wrote, never a
+    blend of two objects', and a pixel's depth and id are the same surface's: a point behind the depth there is hidden by the
+    object the id names. A block's minimum or median depth would pair one pixel's depth with another's id at every edge. The
+    cost: a thin object narrower than `h / H` pixels can fall between samples.
+  - **Is a point hidden?** Project it with the camera's full-res intrinsics and pose (`scenes.jsonl`; the wrist's through its
+    mount link, as for `cameras`) to `(u, v)` and depth `d` (m); read the low-res pixel `(floor(v H / h), floor(u W / w))`;
+    the point is hidden when `depth < 1000 d` by more than your tolerance, and `mask` says by what. For exactness, cast the
+    ray through `(cols[j] + 0.5, rows[i] + 0.5)` instead: the depth there is that ray's.
+  - **Storage, measured** (2026-11-25, takes 187 and 191 with two 640x360 views and take 151 without; `scripts/gpu/
+    depth_mask_sizes.py`): at 160x90, 5.4-10.3 kB a frame and 1.5-2.7 MB an episode of five cameras (3.5 kB a frame, 0.94 MB, for
+    three), 1/28 to 1/53 of the raw arrays; depth is 63-77% of it. As LeRobot array features in the dataset's own parquet the
+    same arrays took 8.2-19.1 kB a frame (1.5-1.9x), added 0.35 MB of per-pixel `stats.json`, and LeRobot read them back as
+    int64, so every reader of the LeRobot dataset would load them with every frame. Hence the sidecar.
+  - `safety-views-check DATASET` checks the arrays against the cameras' recorded poses: the table top's points, cast through
+    each sampled pixel of every base-frame camera (the room cameras, the views; a moving view at each frame's `framePoses`),
+    must have the table's id wherever the depth puts them on its plane, and none may be seen through; the arm's link boxes,
+    posed from the take's `VQ`, must land on the arm's ids where nothing is in front. On the build above: table id at 99.8-
+    99.95% of 38-78 thousand plane pixels per camera, nothing seen through, arm ids at 94.9-97.0% of 397-408 box centres.
+
+`report.json`'s `options` add `views` (true) and `depthMasks` (`[W, H]`) only when given, and `safety-options` gives them back
+(`--views`, `--depth-masks=WxH`). `safety-report` adds a line for each and faults an episode without its views or its file.
 
 `unavoidable_ranges.json`, for analysis: the labels stay contact. Written by default since 2026-11-23 and **provisional
 until the real arm's stop latency is measured** (docs/adr/0038 item 17). It gives the frames from which stopping could no

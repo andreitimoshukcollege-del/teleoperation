@@ -669,6 +669,7 @@ namespace Teleop.Eval.JointDrive
             public int Like, AccidentLike; // and physics-like: a tippy movable object gone after its first contact event
             public readonly List<double> LikeTool = new List<double>();
             public readonly Dictionary<string, int[]> LikeByKind = new Dictionary<string, int[]>();
+            public readonly Dictionary<(int Band, byte Id), int> LikeByBandObject = new Dictionary<(int, byte), int>(); // physics-like events by 5 cm band and object
             public readonly List<(int Accidents, List<double> Tool)> LikeTakes = new List<(int, List<double>)>(); // each take's physics-like events
 
             /// <summary>
@@ -730,6 +731,13 @@ namespace Teleop.Eval.JointDrive
                     $"    physics-like (the events, a tippy movable object knocked over at its first and lying after): {Like}, in an accident's span {AccidentLike} ({100.0 * AccidentLike / Math.Max(1, Like):0}%); tool point 5 cm bins from -20: ") +
                     Histogram(LikeTool.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(LikeTool) + "); " + Spread(LikeTool) + "; by accident kind: " +
                     string.Join(", ", LikeByKind.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value[0]}")));
+                if (LikeByBandObject.Count > 0)
+                {
+                    int top = LikeByBandObject.GroupBy(k => k.Key.Band).OrderByDescending(g => g.Sum(x => x.Value)).First().Key;
+                    Console.WriteLine(FormattableString.Invariant($"    the largest band ({top * 5 - 20} to {top * 5 - 15} cm) by object: ") +
+                                      string.Join(", ", LikeByBandObject.Where(k => k.Key.Band == top).OrderByDescending(k => k.Value).Take(8).Select(k => $"{k.Key.Id} {k.Value}")));
+                }
+
                 Console.WriteLine("    a twin pilot's spread, physics-like (takes resampled): " + Pilot(8) + "; " + Pilot(20) + "; " + Pilot(60));
                 Console.WriteLine("    contact point cm, 5 cm bins from -20: " + Histogram(Point.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(Point) + ")");
                 Console.WriteLine("    touching link: " + Kinds(Links) + "; contact point by link, p50 cm: " +
@@ -881,6 +889,8 @@ namespace Teleop.Eval.JointDrive
                         double tl = plan.ScriptStart + p.At;
                         tally.Like++;
                         tally.LikeTool.Add(arm.Tool.Z);
+                        var bandKey = (Math.Clamp((int)Math.Floor((arm.Tool.Z * 100.0 + 20.0) / 5.0), -1, 8), objects[i].Id);
+                        tally.LikeByBandObject[bandKey] = tally.LikeByBandObject.TryGetValue(bandKey, out int bo) ? bo + 1 : 1;
                         takeLikeTool.Add(arm.Tool.Z);
                         for (int k = 0; k < moves.Count; k++)
                         {

@@ -13,7 +13,9 @@
   table counted as unsafe unless ``--table-safe``, and unavoidable-contact ranges for the twin's three stop times unless
   ``--stop-time-s`` gives one or ``--no-unavoidable`` none, every command's and sampled pose's distances
   (``commands.parquet``, ``pose_samples.parquet``) unless ``--no-command-clearance``, and each object's visibility per frame
-  and camera (``meta/teleop/visibility.parquet``) unless ``--no-visibility``. One dataset per collection stream (docs/adr/0038 L): takes
+  and camera (``meta/teleop/visibility.parquet``) unless ``--no-visibility``; with ``--views`` the twin's view cameras too
+  (docs/adr/0038 "V, views"), with ``--depth-masks WxH`` every camera's downsampled depth and masks
+  (``meta/teleop/depth_masks/``). One dataset per collection stream (docs/adr/0038 L): takes
   from several takes roots (twins) become ``DATASET_twin0``, ``DATASET_twin1``, ..., each split on its own; takes of one
   dataset that overlap in time are refused (exit 3, ``[refused]`` lines naming them), and nothing is written;
 - ``safety-compare REFERENCE REBUILT``: whether a safety dataset rebuilt from a reference's first takes holds the same

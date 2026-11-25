@@ -454,6 +454,9 @@ and +30 cm, and the bands are 5 cm from -20 cm, base frame:
 - **Not checked on the twin:** the bars and posts at their steps, which are kinematic and should stand still; whether the twin's tail
   poses stay inside the rest box (`OVERLAPS_ARM` refusals); the new looks on 72 cm bars; a low bar at the side blocks the arm at home
   turning towards it.
+- **With the motion workstream's planner** (round 7 merged, `v2-round7`, M below): the dry run's lag-aware contacts put at most 24% of
+  the train scene's contacts in one 5 cm band by the tool point (23% by the contact point) and 29% (25%) of the held-out scene's, the tool
+  point's p10 / p50 / p90 at -14.7 / -6.4 / 4.2 cm and -14.3 / -6.1 / 5.7 cm; 192 and 195 of 200 layouts plan.
 
 ### M, motion
 
@@ -1060,6 +1063,55 @@ On layouts 1-200 (seed 1, 3.8 rad/s, 15 s; Release, on the GPU machine). "Before
 - **Not run on the twin.** The twin check: a batch on this branch with the bars' scene, then `--audit-take` over its takes: the share of
   physics contacts begun in an accident's span and 0.2 s after (about a third over all takes, more in the sources), the aimed accidents'
   physics contacts (the record `free` with `MV` accident on it near an object), the agreement table above, and `WC` by link and height.
+
+**Round 7 merged (2026-11-25, branch `v2-round7`): the two branches together, and passes that plan.** `work/v2-scene7` (328f600) and
+`work/v2-motion7` (e94723b) merged onto main (745dc1c) with no conflicts: this section and S's third pass are both kept as written, and
+neither branch touched the other's goldens, vectors or scene files, so nothing was regenerated (`jetrover-bench.json` and its Unity copy
+still `cmp` equal).
+
+- **The failing test.** `MixedTakeTests.OnRandomLayouts_TheTimingRulesHold_AndTheOffsetsAreOneContinuousRange` failed after 1e6640f
+  (link aims 0.4 to 0.2): "64 aims, 0 passes" on 24 bench layouts, against its bar of at least one pass. The cause was the planner, not
+  the change and not the test. A pass planned in 2% of its tries (7 of 349 on the bench's layouts 1-60, against 151 of 1399 aims), so a
+  take had about 0.1 passes at either share (16 made at 0.4, 14 at 0.2, the same layouts), and the bar held over 24 layouts only while
+  the draws fell that way; 1e6640f moved the draws. A pass needs its line on both sides of the object, an aim only the part before it.
+  A third of the passes' lines found no first pose (laid nearer the base than about 16 cm or beyond about 36 cm, since a pass's radius
+  is the object's plus or minus up to half its depth and 7 cm), and most of the rest broke within a few centimetres of the object at the
+  one pitch tried (IK, the envelope, a branch flip), short of 3 cm before its closest point or of the gap opening 1 cm after it.
+- **The fix** (`TryObjectMove`, `Line`, `PassUsable`). A pass's line tries up to three of the pitches that reach its first point,
+  nearest the middle first, until one is usable on both sides (the checks made of it later, without their draws); when none is, the
+  same distance on the object's other side (through a movable object or beside a fixture as before, only mirrored). Aims plan exactly
+  as before: one pitch, the same line, no new draws. The planning report counts the passes' own tries and misses. The test is unchanged:
+  its assumption, passes among the object moves (the bar above), is the design's.
+- **Measured** (layouts 1-200, seed 1, 3.8 rad/s, 15 s, Release on the GPU machine; lag-aware contacts on the follower). "Merged" is
+  e07ef1b, which reproduces the motion section's "after, with bars" column row for row; "fixed" is 87f0d90.
+
+| | Train scene, merged | Train, fixed | Held out, merged | Held out, fixed | Bench, merged | Bench, fixed |
+|---|---|---|---|---|---|---|
+| Layouts planned | 193 | 192 | 192 | 195 | 198 | 196 |
+| Plan time p50 / p90, s | 0.08 / 0.18 | 0.08 / 0.22 | 0.06 / 0.18 | 0.08 / 0.24 | 0.21 / 0.35 | 0.22 / 0.37 |
+| Aims / passes (passes a take) | 231 / 30 (0.16) | 230 / 40 (0.21) | 187 / 25 (0.13) | 183 / 35 (0.18) | 2.7 / 0.1 a take, 22 passes | 2.5 / 0.3 a take, 50 passes |
+| Accidents (a take) | 658 (3.4) | 630 (3.3) | 722 (3.8) | 719 (3.7) | | |
+| Contact onsets / in an accident's span | 334 / 137 (41%) | 358 / 138 (39%) | 295 / 133 (45%) | 346 / 148 (43%) | | |
+| Contact-making records / accidents among them | 274 / 102 (37%) | 300 / 103 (34%) | 248 / 99 (40%) | 290 / 111 (38%) | | |
+| Aimed accidents placed near an object / with a contact | 113 / 73 | 95 / 72 | 112 / 73 | 118 / 83 | | |
+| Accidents farther than 10 cm from every object | 295 (45%) | 299 (47%) | 331 (46%) | 326 (45%) | | |
+| Tool point at contact, 5 cm bins from -20 cm | 38 68 94 69 41 15 8 1 | 30 87 82 83 42 17 16 1 | 28 79 51 64 38 29 4 2 | 29 100 53 61 57 37 6 3 | | |
+| Largest 5 cm band, tool point / contact point | 28% / 25% | 24% / 23% | 27% / 24% | 29% / 25% | | |
+| Tool point p10 / p50 / p90, cm | -15.3 / -7.0 / 3.7 | -14.7 / -6.4 / 4.2 | -14.7 / -6.4 / 5.7 | -14.3 / -6.1 / 5.7 | | |
+| Touching link: gripper, wrist, distal | 73%, 26%, 1% | 77%, 23%, 0 | 62%, 37%, 1% | 64%, 36%, 0 | | |
+| Planned contacts (aims and passes) | 130 in 92 takes | 136 in 93 | 96 in 69 | 106 in 75 | 252 in 147 | 249 in 154 |
+| Aim against free, logistic AUC, whole / main part | 0.670 / 0.710 | 0.665 / 0.700 | 0.695 / 0.757 | 0.676 / 0.724 | | |
+| Largest arm-joint step a frame, p50 / p90 / p99 rad | 0.030 / 0.116 / 0.208 | 0.029 / 0.115 / 0.208 | 0.028 / 0.115 / 0.208 | 0.029 / 0.116 / 0.208 | | |
+
+- **Against the review's asks:** accidents make a third or more of the contacts on both scenes (34-38% of the contact-making records,
+  39-43% of the onsets); no 5 cm band holds more than 29% of the contacts by the tool point or 25% by the contact point; the held-out
+  scene's heights differ (the wrist meets 36% of its contacts against 23%, 94 of 346 contacts from 0 to +10 cm against 59 of 358). By the model over every move
+  (not lag-aware) the largest band is 23% on the train scene and 31% on the held-out one (120 of 391), under the 40% bar.
+- **What the fix costs:** passes are still fewer than their 0.45 share of the draws: on the mixed scenes the object moves beside the
+  robot turn passes into aims, and staging to a pass's start ("move there") now refuses the most passes. Planning a pass tries more
+  lines, so plan times rise a little (p90 0.22 against 0.18 s on the train scene). One train layout more and three held-out layouts
+  fewer find no plan. Aims are told from free moves slightly less well (0.700 against 0.710 in the main part).
+- **Not run on the twin.** The twin check is the motion section's above, on this branch.
 
 ### C, clearance and contacts
 

@@ -1643,7 +1643,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     def femto_view_job(v, frame_no: int, dep, rgb) -> Dict[str, tuple]:
         """A view camera's modelled depth (geometry same, no illumination mask; docs/adr/0039), with --depth-model's views."""
-        if femto is None or not femto.views:
+        if femto is None or not femto.views or not depth_model_module.due(femto, frame_no):
             return {}
         dm = depth_model_module
         fr = dm.same_frame(femto, False, v.id, {"width": v.width, "height": v.height, **v.intrinsics}, backdrop_seed,
@@ -2270,7 +2270,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                     if dep is not None:
                         depth_now = depth_mm(dep)
                         arrays[f"{c['id']}.depth"] = ("png", depth_now, 0)
-                if i in femto_rigs:
+                if i in femto_rigs and depth_model_module.due(femto, frames):
                     arrays.update(femto_jobs(i, frames, dep, rgb))
                 if "mask" in c["record"]:
                     seg, info = read(sensor, "semantic_segmentation")

@@ -82,7 +82,7 @@
  "noise": {
   "sigma0Mm": 0.117,
   "sigma1MmPerM": 0.554,
-  "staticMm": 0.85,
+  "staticMm": 0.7,
   "kernelPx": 4
  },
  "systematic": {
@@ -106,7 +106,7 @@
   "deg50": 86.2,
   "widthDeg": 3.4
  },
- "dropout": 0.003,
+ "dropout": 0.0005,
  "edges": {
   "blurPx": 3,
   "windowPx": 5,

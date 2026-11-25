@@ -90,6 +90,7 @@ class Spec:
     dropout: float
     edges: Mapping
     quant_mm: float
+    record_every: int  # record the modelled streams at frames whose number this divides (2: 15 fps of 30)
     doc: Mapping
 
     def rig(self, camera: str) -> Optional[Rig]:
@@ -191,7 +192,8 @@ def parse(doc: Mapping, scene_cameras: Optional[Sequence[Mapping]] = None) -> Sp
         raise ValueError("cameras: none, and views is off: the model would record nothing")
     return Spec(str(doc.get("name", "")), canonical_sha256(doc), mode, tuple(rigs), bool(doc.get("views", False)), rotation,
                 tuple(float(x) for x in t), tuple((float(p[0]), float(p[1])) for p in poly), n, s, r, g, gz,
-                _num(doc, "dropout", 0, 0.5, "model"), e, _num(doc, "quantMm", 0.01, 100, "model"), doc)
+                _num(doc, "dropout", 0, 0.5, "model"), e, _num(doc, "quantMm", 0.01, 100, "model"),
+                int(_num(doc, "recordEvery", 1, 30, "model")) if "recordEvery" in doc else 1, doc)
 
 
 def load(path: str, scene_cameras: Optional[Sequence[Mapping]] = None) -> Optional[Spec]:
@@ -699,6 +701,11 @@ def same_frame(spec: Spec, rig_mask: bool, camera: str, intr: Mapping, seed: int
 
 
 _PINHOLE: Dict[tuple, tuple] = {}
+
+
+def due(spec: Optional[Spec], frame: int) -> bool:
+    """Whether the modelled streams are recorded at this frame (``recordEvery``)."""
+    return spec is not None and int(frame) % spec.record_every == 0
 
 
 def streams(spec: Optional[Spec], view_ids: Sequence[str] = ()) -> List[str]:

@@ -118,7 +118,7 @@ def test_the_renderer_runs_the_model_only_behind_its_flag():
     src = inspect.getsource(renderer.run)
     assert "femto = depth_model_module.load(args.depth_model, cameras)" in src
     assert "if femto is not None:" in src
-    assert "if i in femto_rigs:" in src  # a frame's camera loop: no rig, no job
+    assert "if i in femto_rigs and depth_model_module.due(femto, frames):" in src  # a frame's camera loop: no rig, no job
     assert "if encode_pool is None and femto is not None:" in src  # the encode pool as before without views or the model
     assert "femto_rigs.get(i, (None, None))[1] is not None" in src  # the jitter moves a depth sensor only if there is one
     for fn in ("femto_records", "femto_view_job"):
@@ -330,6 +330,12 @@ def test_a_takes_systematic_error_is_its_offset_and_field(spec):
     assert np.abs(mean_err - want).mean() < 0.3  # over 24 frames, with 0.5 mm per-frame noise
     offs = [dm.take_systematic(s, seed, 0, "third-left", (8, 8))[0] for seed in range(400)]  # drawn first: any shape
     assert np.std(offs) == pytest.approx(s.systematic["offsetSdMm"], rel=0.12)
+
+
+def test_record_every_thins_the_modelled_streams(spec):
+    assert spec.record_every == 1 and all(dm.due(spec, k) for k in range(5))
+    half = constant(spec, recordEvery=2)
+    assert [dm.due(half, k) for k in range(4)] == [True, False, True, False] and not dm.due(None, 0)
 
 
 def test_depth_is_whole_millimetres_or_the_model_step(spec):

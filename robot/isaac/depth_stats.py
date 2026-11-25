@@ -117,14 +117,18 @@ def boundary_profile(depth_mm, obj_mask, exact_hit=None, reach: int = 6) -> Dict
     return out
 
 
-def plane_residual(depth_mm, intr: Mapping, seed: int = 0, iters: int = 200, tol_mm: float = 6.0):
-    """(residual mm, inlier mask, unit normal, cos of incidence) of the dominant plane in a depth image (pinhole ``intr``)."""
+def plane_residual(depth_mm, intr: Mapping, seed: int = 0, iters: int = 200, tol_mm: float = 6.0, rays=None):
+    """(residual mm, inlier mask, unit normal, cos of incidence) of the dominant plane in a depth image: its rays are
+    ``rays`` (undistorted x, y per pixel, e.g. depth_model.geometry(mode)), or a pinhole ``intr``'s (centres at +0.5)."""
     import numpy as np
 
     d = np.asarray(depth_mm, np.float64)
     h, w = d.shape
-    u, v = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
-    x, y = (u - intr["cx"]) / intr["fx"], (v - intr["cy"]) / intr["fy"]
+    if rays is not None:
+        x, y = (np.asarray(r, np.float64) for r in rays)
+    else:
+        u, v = np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5)
+        x, y = (u - intr["cx"]) / intr["fx"], (v - intr["cy"]) / intr["fy"]
     valid = d > 0
     idx = np.flatnonzero(valid)
     if len(idx) < 100:
@@ -202,8 +206,9 @@ def temporal_noise(frames: Sequence, bins_mm=(300, 500, 700, 900, 1100, 1300, 16
     return out
 
 
-def summarise(frames: Sequence, intr: Optional[Mapping] = None, still: bool = False) -> Dict:
-    """Every statistic of a set of depth images (uint16 mm). ``intr`` enables the plane noise; ``still`` the temporal."""
+def summarise(frames: Sequence, intr: Optional[Mapping] = None, still: bool = False, rays=None) -> Dict:
+    """Every statistic of a set of depth images (uint16 mm). ``intr`` or ``rays`` (a raw image's undistorted rays) enable
+    the plane noise; ``still`` the temporal."""
     import numpy as np
 
     stack = [np.asarray(f) for f in frames]
@@ -220,10 +225,10 @@ def summarise(frames: Sequence, intr: Optional[Mapping] = None, still: bool = Fa
         out["depthMm"] = {str(p): float(np.percentile(valid, p)) for p in (1, 50, 99)}
         steps = np.diff(np.unique(valid))
         out["quantisationMm"] = float(np.median(steps)) if len(steps) else None
-    if intr is not None:
+    if intr is not None or rays is not None:
         lags = defaultdict(list)
         for f in stack[:: max(1, len(stack) // 20)]:
-            got = plane_residual(f, intr)
+            got = plane_residual(f, intr, rays=rays)
             if got is None:
                 continue
             res, good, _, cosi = got
@@ -365,30 +370,41 @@ def main(argv=None) -> int:
     a.add_argument("--camera", default="third-left")
     a.add_argument("--stream", default="depth_femto")
     a.add_argument("--intrinsics", default="", help="fx,fy,cx,cy of the PNGs (enables the plane noise)")
-    a.add_argument("--calibration", default="", help="femto-record's calibration.json: the depth intrinsics from it")
+    a.add_argument("--calibration", default="", help="femto-record's calibration.json: the raw depth camera (intrinsics and "
+                                                      "distortion) from it")
     a.add_argument("--still", action="store_true", help="the camera and scene stood still: also the temporal noise")
     a.add_argument("--limit", type=int, default=0)
     a.add_argument("--out", default="")
     args = a.parse_args(argv)
-    intr = None
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from teleop_isaac import depth_model
+
+    intr, rays = None, None
     if args.take:
         frames, intr = read_take_stream(args.take, args.camera, args.stream, args.limit)
+        used = os.path.join(args.take, "isaac", "depth_model.json")
+        if args.stream == depth_model.STREAM and os.path.exists(used):  # the raw grid of the model the take ran
+            with open(used, encoding="utf-8") as f:
+                spec = depth_model.parse(json.load(f)["spec"])
+            if (spec.rig(args.camera) or depth_model.Rig("", "same", (), False)).geometry == "sensor":
+                g = depth_model.geometry(spec.mode)
+                rays = (g.x, g.y)
     else:
         frames = read_png_dir(args.pngs, args.limit)
     if args.intrinsics:
         fx, fy, cx, cy = (float(v) for v in args.intrinsics.split(","))
         intr = {"fx": fx, "fy": fy, "cx": cx, "cy": cy}
-    elif args.calibration:
+    elif args.calibration:  # a real Femto's raw depth: its rays through the calibration's distortion
         with open(args.calibration, encoding="utf-8") as f:
             cal = json.load(f)
-        d = (cal.get("streams") or {}).get("depth") or {}
-        k = d.get("intrinsic") or d.get("intrinsics") or {}
-        if k:
-            intr = {"fx": float(k["fx"]), "fy": float(k["fy"]), "cx": float(k["cx"]), "cy": float(k["cy"])}
+        with open(os.path.join(depth_model.default_dir(), "femto-nfov.json"), encoding="utf-8") as f:
+            spec = depth_model.parse(depth_model.from_calibration(json.load(f), cal))
+        g = depth_model.geometry(spec.mode)
+        rays = (g.x, g.y)
     if not frames:
         print("error: no frames", file=sys.stderr)
         return 1
-    out = summarise(frames, intr, args.still)
+    out = summarise(frames, intr, args.still, rays)
     text = json.dumps(out, indent=1)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

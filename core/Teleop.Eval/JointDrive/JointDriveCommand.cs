@@ -1174,7 +1174,7 @@ namespace Teleop.Eval.JointDrive
             ArmCollisionModel model = c.Profile.Collision!;
             if (!WorldView.TryObjects(c.Link.World!, out List<SafetyObject> now)) return false;
             ArmPose from = c.Link.Measured;
-            if (!DrivePlan.TryApproach(c.Profile, SafetyScript.WithObjects(model, now, 0.01f), from, to, out List<(ArmPose To, bool Step)> via, out string? error))
+            if (!DrivePlan.TryApproach(c.Profile, SafetyScript.WithObjects(model, now, 0.01f), from, to, out List<(ArmPose To, bool Step)> via, out string? error, tucked: true))
             {
                 Console.Error.WriteLine($"joint-drive: {error}");
                 return false;

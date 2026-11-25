@@ -85,6 +85,7 @@ namespace Teleop.Eval.JointDrive
             int blindMoves = 0, blindTouching = 0, blindTakes = 0; // layout-blind moves that meet a movable object's box by the model
             // docs/adr/0038 decision 2: the edits of a group of two replays, as joint-drive draws them
             var editKinds = new int[5];
+            var wayBack = new int[3]; // groups with an edit; of them, no way back to the source's start as before; and with the tucked way
             int groups = 0, addGroups = 0, addsMoved = 0, addsUnparked = 0, addsMet = 0, noEdit = 0;
             var addFirst = new List<double>();
             var addHeights = new List<float>();
@@ -218,6 +219,17 @@ namespace Teleop.Eval.JointDrive
                         Count(noAddWhy, key);
                     }
                     TallyEdits(profile, model, commanded, objects, edits, editTally);
+                    // A replay first goes back to where the source began, from where it ended, on the source's layout (SetupMove): straight or a
+                    // joint at a time, or (since round 7's twin check) by way of the arm tucked up.
+                    if (edits.Length > 0)
+                    {
+                        ArmCollisionModel back = SafetyScript.WithObjects(model, objects, 0.01f);
+                        ArmPose end = plan.Sample(plan.TotalSeconds), begin = plan.Sample(plan.ScriptStart);
+                        wayBack[0]++;
+                        if (!DrivePlan.TryApproach(profile, back, end, begin, out _, out _)) wayBack[1]++;
+                        if (!DrivePlan.TryApproach(profile, back, end, begin, out _, out _, tucked: true)) wayBack[2]++;
+                    }
+
                     if (edits.Length < 2) noEdit++;
                     foreach (ReplayEditDraw e in edits)
                     {
@@ -264,6 +276,8 @@ namespace Teleop.Eval.JointDrive
                     $"  replays, 2 a group as drawn (nothing refused offline): an add in {addGroups} of {groups} groups ({addsMoved} moving one of the layout's, {addsUnparked} a parked one); edits remove {editKinds[1]}, shift {editKinds[2]}, move {editKinds[3]}, add {editKinds[4]}; groups with fewer than 2 edits {noEdit}"));
                 Console.WriteLine(FormattableString.Invariant(
                     $"  adds: the arm meets the added object's box by the model in {addsMet} of {addGroups}, first {Percentiles(addFirst, "0.0")} s into the take; the added object's top mm above the table: {Percentiles(addHeights.Select(h => (double)h).ToList(), "0")}"));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  replays' way back to where the source began (from its end, on its layout, 1 cm clear): none in {wayBack[1]} of {wayBack[0]} groups straight or a joint at a time; {wayBack[2]} also by way of the arm tucked up"));
                 Console.WriteLine("  aims' offsets mm (aimed at), 10 mm bins from -40: " + Histogram(offsets.Select(o => o * 1000.0), -40, 10, 10));
                 Console.WriteLine("  aims' offsets mm: " + Percentiles(offsets.Select(o => o * 1000.0).ToList(), "0"));
                 Console.WriteLine("  passes' offsets mm (closest on the line), 10 mm bins from -40: " + Histogram(passOffsets.Select(o => o * 1000.0), -40, 10, 9));

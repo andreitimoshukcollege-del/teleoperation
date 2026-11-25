@@ -437,14 +437,19 @@ namespace Teleop.Eval.JointDrive
         /// contacts the resting pose already has allowed on the way (<see cref="ArmContacts"/>); that move
         /// is a step (<c>Step</c>), commanded at once, since RobotHost refuses a commanded pose that collides.
         /// </summary>
+        /// <remarks>
+        /// With <paramref name="tucked"/> (a mixed take's replays going back to where their source began, docs/adr/0038 "M, motion", round 7
+        /// on the twin), when neither way is clear, also by way of the arm tucked up as home holds it (<see cref="TuckedPoses"/>): there at
+        /// the yaw it has, round the base to the target's yaw, then to the target; each leg straight or one joint at a time, as above.
+        /// </remarks>
         public static bool TryApproach(in RobotArmProfile profile, ArmCollisionModel model, in ArmPose start, in ArmPose home,
-            out List<(ArmPose To, bool Step)> via, out string? error)
+            out List<(ArmPose To, bool Step)> via, out string? error, bool tucked = false)
         {
             via = new List<(ArmPose, bool)>();
             error = null;
             if (ArmCollision.IsValid(profile, model, start))
             {
-                if (TryReach(profile, model, start, home, via)) return true;
+                if (TryReach(profile, model, start, home, via) || (tucked && TryReachTucked(profile, model, start, home, via))) return true;
                 error = $"no collision-free path from the arm's measured pose ({Describe(start)}) to home ({Describe(home)}), " +
                         "straight or one joint at a time, so nothing was sent. Move the arm to a clear pose first " +
                         "(just move-arm 0.15 0 0.08), then run again";
@@ -469,7 +474,7 @@ namespace Teleop.Eval.JointDrive
                         ArmPose free = WithJoint(start, j, Joint(start, j) + sign * deg * MathF.PI / 180f);
                         if (!ArmCollision.IsValid(profile, model, free) || !PathValid(profile, allowed, null, start, free)) continue;
                         var rest = new List<(ArmPose, bool)>();
-                        if (!TryReach(profile, model, free, home, rest)) continue;
+                        if (!TryReach(profile, model, free, home, rest) && !(tucked && TryReachTucked(profile, model, free, home, rest))) continue;
                         via.Add((free, true));
                         via.AddRange(rest);
                         return true;
@@ -510,6 +515,30 @@ namespace Teleop.Eval.JointDrive
                     via.AddRange(legs);
                     return true;
                 }
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// The tucked poses a way back may go through (<see cref="TryApproach"/>): home's shoulder, elbow and wrist pitch, and that lifted at
+        /// the shoulder by 10 and 20 degrees with the elbow folded as much, the yaw and roll left to the way.
+        /// </summary>
+        internal static readonly (float Proximal, float Distal, float Wrist)[] TuckedPoses = { (0f, 0f, 0f), (10f, -10f, 0f), (20f, -20f, 0f) };
+
+        private static bool TryReachTucked(in RobotArmProfile profile, ArmCollisionModel model, in ArmPose from, in ArmPose to, List<(ArmPose, bool)> via)
+        {
+            const float deg = MathF.PI / 180f;
+            ArmPose home = model.Home;
+            foreach ((float dp, float dd, float dw) in TuckedPoses)
+            {
+                var up = new ArmPose(from.BaseYaw, home.Proximal + dp * deg, home.Distal + dd * deg, home.Wrist + dw * deg, from.Roll);
+                var round = new ArmPose(to.BaseYaw, up.Proximal, up.Distal, up.Wrist, to.Roll);
+                if (!ArmCollision.IsValid(profile, model, up) || !ArmCollision.IsValid(profile, model, round)) continue;
+                var legs = new List<(ArmPose, bool)>();
+                if (!TryReach(profile, model, from, up, legs) || !TryReach(profile, model, up, round, legs) || !TryReach(profile, model, round, to, legs)) continue;
+                via.AddRange(legs);
+                return true;
             }
 
             return false;

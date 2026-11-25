@@ -97,7 +97,8 @@ namespace Teleop.Eval.Tests.JointDrive
             Assert.True(o.AimAccidents);
             Assert.True(o.SharedHeights);
             Assert.Equal(0.2, o.LinkAimShare);
-            Assert.Equal(0.6, o.AccidentNearShare);
+            Assert.Equal(0.8, o.AccidentNearShare);
+            Assert.True(o.SpendTouched);
             o.LinkAimShare = 1.5;
             Assert.Throws<ArgumentException>(() => o.Validate());
             foreach (ScriptMoveKind k in new[] { ScriptMoveKind.Jerk, ScriptMoveKind.Overshoot, ScriptMoveKind.Slip, ScriptMoveKind.Rush })

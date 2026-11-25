@@ -170,6 +170,12 @@ namespace Teleop.Eval.JointDrive
                             if (fo.Length != 3) throw new ArgumentException("--follow is three numbers: delay s, time constant s, joint speed rad/s");
                             (TakeAudit.FollowDelay, TakeAudit.FollowTau, TakeAudit.FollowSpeed) = (fo[0], fo[1], fo[2]);
                             break;
+                        case "--follow-sag":
+                            // the follower's sag under the arm's weight: shoulder, elbow, wrist pitch, rad (docs/adr/0038 "M, motion", round 7 on the twin)
+                            double[] sg = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (sg.Length != 3 || sg.Any(x => !(Math.Abs(x) <= 0.2))) throw new ArgumentException("--follow-sag is three numbers within 0.2 rad: shoulder, elbow, wrist pitch");
+                            (TakeAudit.FollowSag[1], TakeAudit.FollowSag[2], TakeAudit.FollowSag[3]) = (sg[0], sg[1], sg[2]);
+                            break;
                         case "--chain": dryOptions.Chain = true; break; // a dry run's layouts each from where the last left the arm, as the twin's takes
                         case "--lag": dryOptions.LagSeconds = Number(); break; // a dry run's adds look at the commanded way this late, as at a measured track
                         case "--max-joint-speed": PerJoint(Next(), Caps().JointSpeed, "--max-joint-speed"); break;

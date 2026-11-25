@@ -68,6 +68,7 @@ namespace Teleop.Eval.JointDrive
             var phys = new ContactTally();
             var byModelEvents = new ContactTally();
             var byMovingEvents = new ContactTally();
+            var byLikeEvents = new ContactTally();
             var toolBias = new List<double>();
             var objectFates = new Dictionary<string, int[]>(); // fixed, tipped, moved, stayed: objects, later physics events, later model events
             var jointBias = new[] { new List<double>(), new List<double>(), new List<double>(), new List<double>(), new List<double>() };
@@ -268,6 +269,7 @@ namespace Teleop.Eval.JointDrive
                 var modelOnsets = new List<(double T, int Object, bool Accident)>();
                 var inside = new bool[reach.Count];
                 var modelEvents = new MixedDryRun.ContactEvents();
+                var likeEvents = new MixedDryRun.ContactEvents();
                 var modelEventTimes = new List<(double T, int Object)>();
                 foreach (Sample s in follow)
                 {
@@ -286,10 +288,20 @@ namespace Teleop.Eval.JointDrive
                                 byModelEvents.Add(acc, arm.Tool.Z, ln);
                                 modelEventTimes.Add((s.T, reach[i].Id));
                             }
+
+                            if (likeEvents.Begin(reach[i].Id, s.T))
+                            {
+                                byLikeEvents.Add(acc, arm.Tool.Z, ln);
+                                if (reach[i].Movable && reach[i].Tippy) likeEvents.Spend(reach[i].Id);
+                            }
                             if (rows) Console.WriteLine(FormattableString.Invariant($"    model contact {reach[i].Id} at {s.T - t0:0.00} s by {link.ToString().ToLowerInvariant()}{(acc ? ", in an accident" : "")}; tool z {arm.Tool.Z * 100:0.0} cm"));
                         }
 
-                        if (!now && inside[i]) modelEvents.Stop(reach[i].Id, s.T);
+                        if (!now && inside[i])
+                        {
+                            modelEvents.Stop(reach[i].Id, s.T);
+                            likeEvents.Stop(reach[i].Id, s.T);
+                        }
                         inside[i] = now;
                     }
                 }
@@ -467,6 +479,7 @@ namespace Teleop.Eval.JointDrive
             Console.WriteLine(FormattableString.Invariant($"  as contact events (a re-touch within {MixedDryRun.ContactEvents.MergeSeconds:0.0} s of the object's last release is the same contact): the model {byModelEvents.Describe()}"));
             Console.WriteLine(FormattableString.Invariant($"    physics {physEvents.Describe()}"));
             Console.WriteLine(FormattableString.Invariant($"    the model with the objects where physics had them at each moment: {byMovingEvents.Describe()}"));
+            Console.WriteLine(FormattableString.Invariant($"    the model, physics-like (a tippy movable object gone after its first contact, as the dry run counts): {byLikeEvents.Describe()}"));
             Console.WriteLine("  objects physics touched, by what became of them after the first touch (objects: later contact events by physics / by the model): " +
                               string.Join(", ", objectFates.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => FormattableString.Invariant($"{k.Key} {k.Value[0]}: {k.Value[1]} / {k.Value[2]}"))));
             Console.WriteLine("  the measured tool point's height less the follower's, mm: " + MixedDryRun.Percentiles(toolBias, "0.0") + FormattableString.Invariant($"; mean {(toolBias.Count == 0 ? 0 : toolBias.Average()):0.0}") +
@@ -510,6 +523,17 @@ namespace Teleop.Eval.JointDrive
         /// <summary>The follower: the command <see cref="FollowDelay"/> late, each joint at most <see cref="FollowSpeed"/>, and lagging it with time constant <see cref="FollowTau"/>.</summary>
         internal static double FollowDelay = 0.10, FollowTau = 0.08, FollowSpeed = 3.7;
 
+        /// <summary>
+        /// Where the twin's arm sits under its own weight against the follower, rad, yaw to roll (docs/adr/0038 "M, motion", round 7 on the
+        /// twin): the measured joints' mean less the follower's over the views pilot's 46 takes, the shoulder and elbow below it, so the tool
+        /// point hangs about 9 mm lower (p50). Added to every followed pose.
+        /// </summary>
+        internal static readonly double[] FollowSag = { 0, 0, 0, 0, 0 };
+
+        /// <summary>A followed pose with <see cref="FollowSag"/> added.</summary>
+        internal static ArmPose Sagged(float yaw, float proximal, float distal, float wrist, float roll) =>
+            new ArmPose(yaw + (float)FollowSag[0], proximal + (float)FollowSag[1], distal + (float)FollowSag[2], wrist + (float)FollowSag[3], roll + (float)FollowSag[4]);
+
         private static void Tally(int[,] t, int k, bool model, bool physics) => t[k, model ? (physics ? 0 : 1) : (physics ? 2 : 3)]++;
 
         private static List<Sample> Follow(List<Sample> cmd, double delay, double tau, double speed)
@@ -533,7 +557,7 @@ namespace Teleop.Eval.JointDrive
                     q[j] += (float)Math.Clamp(step, -max, max);
                 }
 
-                output.Add(new Sample(s.T, new ArmPose(q[0], q[1], q[2], q[3], q[4]), cmd[k].Gripper, false));
+                output.Add(new Sample(s.T, Sagged(q[0], q[1], q[2], q[3], q[4]), cmd[k].Gripper, false));
             }
 
             return output;

@@ -269,7 +269,7 @@ namespace Teleop.Eval.JointDrive
                 var modelOnsets = new List<(double T, int Object, bool Accident)>();
                 var inside = new bool[reach.Count];
                 var modelEvents = new MixedDryRun.ContactEvents();
-                var likeEvents = new MixedDryRun.ContactEvents();
+                var likeEvents = new MixedDryRun.PhysicsLike(reach);
                 var modelEventTimes = new List<(double T, int Object)>();
                 foreach (Sample s in follow)
                 {
@@ -289,19 +289,14 @@ namespace Teleop.Eval.JointDrive
                                 modelEventTimes.Add((s.T, reach[i].Id));
                             }
 
-                            if (likeEvents.Begin(reach[i].Id, s.T))
-                            {
-                                byLikeEvents.Add(acc, arm.Tool.Z, ln);
-                                if (reach[i].Movable && reach[i].Tippy) likeEvents.Spend(reach[i].Id);
-                            }
                             if (rows) Console.WriteLine(FormattableString.Invariant($"    model contact {reach[i].Id} at {s.T - t0:0.00} s by {link.ToString().ToLowerInvariant()}{(acc ? ", in an accident" : "")}; tool z {arm.Tool.Z * 100:0.0} cm"));
                         }
 
-                        if (!now && inside[i])
-                        {
-                            modelEvents.Stop(reach[i].Id, s.T);
-                            likeEvents.Stop(reach[i].Id, s.T);
-                        }
+                        if (!now && inside[i]) modelEvents.Stop(reach[i].Id, s.T);
+                        ArmLink likeLink = link;
+                        if (likeEvents.Step(arm, i, s.T, now, ref likeLink))
+                            byLikeEvents.Add(moves.Any(m => IsAccident(m.Kind) && s.T >= m.Start && s.T <= m.End + lag), arm.Tool.Z,
+                                likeLink == ArmLink.Gripper ? "gripper" : likeLink == ArmLink.Wrist ? "wrist" : likeLink.ToString().ToLowerInvariant());
                         inside[i] = now;
                     }
                 }
@@ -479,7 +474,7 @@ namespace Teleop.Eval.JointDrive
             Console.WriteLine(FormattableString.Invariant($"  as contact events (a re-touch within {MixedDryRun.ContactEvents.MergeSeconds:0.0} s of the object's last release is the same contact): the model {byModelEvents.Describe()}"));
             Console.WriteLine(FormattableString.Invariant($"    physics {physEvents.Describe()}"));
             Console.WriteLine(FormattableString.Invariant($"    the model with the objects where physics had them at each moment: {byMovingEvents.Describe()}"));
-            Console.WriteLine(FormattableString.Invariant($"    the model, physics-like (a tippy movable object gone after its first contact, as the dry run counts): {byLikeEvents.Describe()}"));
+            Console.WriteLine(FormattableString.Invariant($"    the model, physics-like (a tippy movable object knocked over at its first contact and lying after, as the dry run counts): {byLikeEvents.Describe()}"));
             Console.WriteLine("  objects physics touched, by what became of them after the first touch (objects: later contact events by physics / by the model): " +
                               string.Join(", ", objectFates.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => FormattableString.Invariant($"{k.Key} {k.Value[0]}: {k.Value[1]} / {k.Value[2]}"))));
             Console.WriteLine("  the measured tool point's height less the follower's, mm: " + MixedDryRun.Percentiles(toolBias, "0.0") + FormattableString.Invariant($"; mean {(toolBias.Count == 0 ? 0 : toolBias.Average()):0.0}") +

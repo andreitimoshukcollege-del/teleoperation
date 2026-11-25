@@ -72,6 +72,10 @@ def main(argv=None) -> int:
             s.add_argument("--robot-hosts-file", default="", help="the robot's addresses, one per line (just lerobot-robot-key)")
             s.add_argument("--robot-mdns", default="jetrover-sinrg.local")
             s.add_argument("--robot-key", default="", help="the ssh key the robot accepts from this machine")
+            s.add_argument("--archive", default="", help="a command run with the changed folders (paths under --data-root) "
+                                                          "after a pass, e.g. '~/.local/bin/teleop-cluster-archive archive'; "
+                                                          "empty = off (docs/explorer-cluster.md)")
+            s.add_argument("--data-root", default="", help="what --archive's paths are relative to (default: --out's parent)")
         else:
             s.add_argument("dataset", help="<robot>-<source>/<scenario>, under --out")
     s = sub.add_parser("inspect")
@@ -315,7 +319,9 @@ def main(argv=None) -> int:
 
         puller = RobotPuller(os.path.expanduser(a.pull_robot), hosts_file=os.path.expanduser(a.robot_hosts_file) or None,
                              mdns=a.robot_mdns, key=os.path.expanduser(a.robot_key) or None, log=_log)
-    conv = Converter(roots, out, LeRobotWriter(a.vcodec), fps=a.fps, settle=a.settle, log=_log, puller=puller)
+    archive = [os.path.expanduser(w) for w in a.archive.split()] if a.command == "watch" and a.archive else None
+    conv = Converter(roots, out, LeRobotWriter(a.vcodec), fps=a.fps, settle=a.settle, log=_log, puller=puller,
+                     archive=archive, data_root=os.path.expanduser(a.data_root) if a.command == "watch" else "")
     if a.command == "watch":
         conv.run(every=a.every, once=a.once)
         return 0

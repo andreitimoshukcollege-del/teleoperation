@@ -365,7 +365,8 @@ its capture stamp (the sender's clock, which all three senders on the Jetson sha
 **The first recording.** `20261124T235328Z-charuco` ran for 120 s at about 4 fps per feed (the PC reached the robot only
 over relayed Tailscale). The user moved a box with a ChArUco board through the views: 7x9 squares, 28 mm squares,
 21 mm markers, DICT_5X5, ids 0-30. The board is described in the recording's `board.json`. Copies are in the C:
-checkout's `recordings/` (gitignored) and on the GPU machine under `~/data/real-cameras/calibration/`.
+checkout's `recordings/` (gitignored) and in the cluster archive under `teleop-data/real-cameras/calibration/`
+(docs/explorer-cluster.md "Data from the GPU machine"). `camera-calib-record` and `femto-record` store there themselves.
 
 **Calibration** (`scripts/gpu/charuco_calibrate.py`, written to the recording's `calibration.json`). It uses only still
 views: the board's corners moved under 1.5 px since the same camera's previous frame.

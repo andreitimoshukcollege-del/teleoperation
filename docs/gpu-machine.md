@@ -16,7 +16,8 @@ they need. Nothing here is edited by hand, except a take list (`scenarios.txt`).
 │   ├── backdrops/                   the Open Images backdrops (just isaac-backdrops-fetch; the scene files name this path)
 │   ├── assets/hdri/polyhaven-indoor/ the HDRI rooms around the JetRover twin (ADR 0037; just isaac-environments-fetch; jetrover-bench names this path)
 │   └── jetrover-uplink              the uplink impairment's control file (just isaac-uplink-*; twin 0's: twin 1 has jetrover-uplink-1)
-├── data/                            everything recorded, and what is built from it
+├── data/                            everything recorded, and what is built from it: the working set; the archive is
+│                                    on Explorer (docs/explorer-cluster.md "Data from the GPU machine")
 │   ├── sessions/<robot>-<source>/   automatic sessions: jetrover-isaac (isaac-jetrover-host), fr3_duo-isaac (isaac-host);
 │   │                                jetrover-isaac-twin1 (the JetRover's second twin, ADR 0037 amendment 7)
 │   ├── takes/<robot>-<source>/      the RECORD button's takes, <scenario>/<UTC>-take<n>/, set-asides in _discarded/:
@@ -39,6 +40,10 @@ they need. Nothing here is edited by hand, except a take list (`scenarios.txt`).
 │                                    lerobot-test
 └── teleoperation/                   the trainer's checkout (just gpu-train): its trainer/.venv and trainer/runs/<run>/
 ```
+
+**The data's home is the cluster since 2026-11-25:** `/projects/world-models/<user>/teleop-data` on Explorer, filled by
+`just cluster-archive` (nightly with `just cluster-archive-schedule`, and at the end of each safety batch); `just cluster-prune`
+frees space here. The labmate reads the archive there (group world-models).
 
 The labmate's account reads parts of `data/` once `just isaac-share-scenarios` has run. It can list the home folder,
 `data/` and `data/takes/` (an "enter only" entry there made `ls` fail, 2026-11-17); what is private keeps its own mode

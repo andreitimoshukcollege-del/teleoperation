@@ -2789,7 +2789,7 @@ camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host 
     cd core && dotnet run --project Teleop.CameraHost -c Release -- probe --host $(just _robot-host "{{remote_host}}") \
         --port {{port}} --local-port {{local_port}} --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
 
-# Record every frame of the robot's three camera feeds at once, for camera calibration (a ChArUco board moved through the views) or a still scene: front = the DaBai (6003, 640x360), left/right = the Femto Bolts' colour (6008/6009, 1280x720), each into recordings/calibration/<UTC time>-<label>/<camera>/ as JPEGs named by the robot's capture stamp (one clock, so frames match across cameras) with frames.csv. Moves nothing; takes the feeds from the headset while it runs
+# Record every frame of the robot's three camera feeds at once, for camera calibration (a ChArUco board moved through the views) or a still scene: front = the DaBai (6003, 640x360), left/right = the Femto Bolts' colour (6008/6009, 1280x720), each into recordings/calibration/<UTC time>-<label>/<camera>/ as JPEGs named by the robot's capture stamp (one clock, so frames match across cameras) with frames.csv, then stores a copy in the cluster archive (teleop-data/real-cameras/calibration). Moves nothing; takes the feeds from the headset while it runs
 [group('robot: checks and diagnostics (nothing moves)')]
 camera-calib-record label="calib" seconds="120" max_fps="10" remote_host=default_jetrover_host:
     #!/usr/bin/env bash
@@ -2810,12 +2810,17 @@ camera-calib-record label="calib" seconds="120" max_fps="10" remote_host=default
     done
     rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done
     for c in front left right; do echo "[$c] $(grep -E '^== received' "../$dir/$c.log" || echo 'no frames: see '"$dir/$c.log")"; done
+    cd .. && { just _cluster-store "$dir" real-cameras/calibration || true; }
     exit $rc
 
 # Record depth + colour (+ every ir_every'th IR frame) from both Femto Bolts through Orbbec SDK v2 (user-space in /home/jetson/orbbec, fetched on first run), with each device's factory calibration as JSON, into recordings/depth/<UTC>-<label>/ on this machine (left = usb 1.4.3, right = 1.4.2). Moves nothing, but stops teleop-camerahost-left/-right for the capture and always starts them again; the DaBai sender, RobotHost and ROS are untouched. probe=true only lists the devices and their sync config. Needs 4 GB free on the robot; the robot's copy is deleted once the pull checks out
 [group('robot: checks and diagnostics (nothing moves)')]
 femto-record label="static" seconds="120" fps="5" ir_every="5" probe="false" remote_host=default_jetrover_host:
+    #!/usr/bin/env bash
+    set -euo pipefail
     bash robot/femto/femto-record.sh "$(just _robot-host "{{remote_host}}")" "{{label}}" "{{seconds}}" "{{fps}}" "{{ir_every}}" recordings/depth {{ if probe == "true" { "probe" } else { "record" } }}
+    # A recording (not a probe) also goes to the cluster archive: the newest folder the script pulled.
+    if [ "{{probe}}" != true ]; then d=$(ls -dt recordings/depth/*-"{{label}}" 2>/dev/null | head -1); [ -z "$d" ] || just _cluster-store "$d" real-cameras/depth || true; fi
 
 # Show the robot's camera live in a window on this machine until Enter -- moves nothing, touches no service: subscribes as the headset does and serves the frames to a browser window at http://localhost:<http_port>/ (Edge's app window when it can). The sender streams to its newest subscriber only, so while this runs the headset loses the feed (close one of the two). Needs the camera sender running (just camera-logs) and inbound UDP on 6004 allowed by this machine's firewall. seconds=0 runs until Enter
 [group('robot: checks and diagnostics (nothing moves)')]
@@ -3406,6 +3411,90 @@ explorer-fetch path:
     REMOTE
     tar xzf "$tgz" -C trainer/runs/explorer
     echo "trainer/runs/explorer/$p ($(du -sh "trainer/runs/explorer/$p" | cut -f1)), archive $tgz"
+
+# Internal: store a folder made on this PC (`src`, e.g. a camera recording) in the cluster archive under teleop-data/`sub` (docs/explorer-cluster.md "Data from the GPU machine"), through RC's transfer node with this PC's RC key; checks the file count. A failure warns and returns 1, the local copy stays
+[positional-arguments]
+_cluster-store src sub:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    src="$1"; sub="$2"
+    case "$sub" in /*|*..*|*[!A-Za-z0-9._/-]*) echo "error: sub is a relative path of letters, digits, . _ - /" >&2; exit 1 ;; esac
+    [ -d "$src" ] || { echo "error: $src is not a folder" >&2; exit 1; }
+    x=(ssh -o ConnectTimeout=20 -o HostName=xfer.discovery.neu.edu -o ControlMaster=no -o ControlPath=none {{explorer_host}})
+    dest=$("${x[@]}" 'echo /projects/world-models/$USER/teleop-data') || { echo "[cluster] warning: cannot reach the cluster; $src stays here only" >&2; exit 1; }
+    name=$(basename "$src")
+    tar cf - -C "$(dirname "$src")" "$name" | "${x[@]}" "umask 007; mkdir -p '$dest/$sub' && tar xf - -C '$dest/$sub'"
+    here=$(find "$src" -type f | wc -l); there=$("${x[@]}" "find '$dest/$sub/$name' -type f | wc -l")
+    if [ "$here" = "$there" ]; then echo "[cluster] stored: $dest/$sub/$name ($there files)"; else echo "[cluster] warning: $there of $here files on the cluster at $dest/$sub/$name" >&2; exit 1; fi
+
+# Let the GPU machine send data to Explorer's lab space itself (docs/explorer-cluster.md "Data from the GPU machine"), once: copies this PC's RC-issued key (the IdentityFile of ssh host `explorer` here) into the GPU account's ~/.ssh (mode 600, a 700 folder no other account can read) and adds hosts `explorer` and `explorer-xfer` (xfer.discovery.neu.edu, RC's transfer node) to its ~/.ssh/config, then checks the transfer node answers. Run it again after RC issues a new key
+[group('explorer')]
+gpu-cluster-key:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    key=$(ssh -G {{explorer_host}} | awk '$1 == "identityfile" {print $2; exit}'); key=${key/#\~/$HOME}
+    user=$(ssh -G {{explorer_host}} | awk '$1 == "user" {print $2; exit}')
+    [ -f "$key" ] || { echo "error: no key for ssh host {{explorer_host}} here ($key)" >&2; exit 1; }
+    name=$(basename "$key")
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "umask 077; mkdir -p ~/.ssh && cat > ~/.ssh/$name && chmod 600 ~/.ssh/$name" < "$key"
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "NAME='$name' CUSER='$user' bash -s" <<'REMOTE'
+    set -euo pipefail
+    touch ~/.ssh/config && chmod 600 ~/.ssh/config
+    # Replace an earlier block of ours, keep everything else.
+    python3 - <<'PY'
+    import os, re
+    p = os.path.expanduser("~/.ssh/config"); s = open(p).read()
+    s = re.sub(r"\n?# teleop: Explorer \(just gpu-cluster-key\).*?# teleop: end\n", "\n", s, flags=re.S)
+    block = "\n# teleop: Explorer (just gpu-cluster-key)\n"
+    for host, name in (("explorer", "login.explorer.northeastern.edu"), ("explorer-xfer", "xfer.discovery.neu.edu")):
+        block += f"Host {host}\n    HostName {name}\n    User {os.environ['CUSER']}\n    IdentityFile ~/.ssh/{os.environ['NAME']}\n    IdentitiesOnly yes\n"
+    open(p, "w").write(s.rstrip("\n") + "\n" + block + "# teleop: end\n")
+    PY
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 explorer-xfer 'echo "[cluster] the GPU machine reaches $(hostname) as $USER"'
+    REMOTE
+
+# Copy the GPU machine's recorded data (~/data there: takes, sessions, LeRobot datasets, network datasets, real camera recordings) to Explorer's lab space, /projects/world-models/<cluster user>/teleop-data (11 TB; docs/explorer-cluster.md "Data from the GPU machine"), straight from the GPU machine through RC's transfer node, then check nothing still differs. Paths under ~/data narrow it (`just cluster-archive takes/jetrover-real lerobot`); none = all of it. Adds and updates, never deletes there. Waits until done: the first full copy (~150 GB) takes a while, so use cluster-archive-start for that
+[group('explorer')]
+cluster-archive *paths:
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s archive {{paths}}" < scripts/gpu/cluster_archive.sh
+
+# cluster-archive, detached on the GPU machine: it outlives this shell; log in ~/logs/cluster/archive-<UTC>.log there (just cluster-data-status shows the newest)
+[group('explorer')]
+cluster-archive-start *paths:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "mkdir -p ~/logs/cluster ~/.local/bin && cat > ~/.local/bin/teleop-cluster-archive && chmod 755 ~/.local/bin/teleop-cluster-archive" < scripts/gpu/cluster_archive.sh
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "log=~/logs/cluster/archive-\$(date -u +%Y%m%dT%H%M%SZ).log; nohup ~/.local/bin/teleop-cluster-archive archive {{paths}} > \$log 2>&1 < /dev/null & echo \"[cluster] started (pid \$!), log \$log on the GPU machine\""
+
+# Copy the GPU machine's new data to the cluster every night at 03:30 (its local time), the way cluster-archive-start does: a cron entry there running the installed copy of scripts/gpu/cluster_archive.sh, logging to ~/logs/cluster/nightly.log. Adds and updates on the cluster only; deletes nothing anywhere. `just cluster-archive-schedule false` removes the entry
+[group('explorer')]
+cluster-archive-schedule on="true":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{on}}" in true|false) ;; *) echo "error: on must be true or false" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "mkdir -p ~/logs/cluster ~/.local/bin && cat > ~/.local/bin/teleop-cluster-archive && chmod 755 ~/.local/bin/teleop-cluster-archive" < scripts/gpu/cluster_archive.sh
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "ON='{{on}}' bash -s" <<'REMOTE'
+    set -euo pipefail
+    line='30 3 * * * $HOME/.local/bin/teleop-cluster-archive archive >> $HOME/logs/cluster/nightly.log 2>&1 # teleop cluster-archive'
+    { crontab -l 2>/dev/null | grep -v '# teleop cluster-archive' || true; [ "$ON" = true ] && echo "$line"; } | crontab -
+    echo "[cluster] nightly archive: $([ "$ON" = true ] && echo 'on, 03:30' || echo off)"; crontab -l | grep 'teleop cluster-archive' || true
+    REMOTE
+
+# Free space on the GPU machine: list the take and session folders there whose newest file is older than `days` days AND whose copy on the cluster is identical (checksums), with their total size and the list's path; apply=true deletes exactly those. Datasets are never pruned here (delete one by hand, by its path, once agreed). A folder not yet on the cluster is kept and named
+[group('explorer')]
+cluster-prune days="14" apply="false":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{apply}}" in true) a=apply ;; false) a= ;; *) echo "error: apply must be true or false" >&2; exit 1 ;; esac
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s prune '{{days}}' $a" < scripts/gpu/cluster_archive.sh
+
+# What the GPU machine holds and what the cluster's archive holds (sizes, file counts, free space), and the end of the newest archive log there -- touches nothing
+[group('explorer')]
+cluster-data-status:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" "bash -s status" < scripts/gpu/cluster_archive.sh
+    ssh -o ConnectTimeout=10 "{{gpu_host}}" 'l=$(ls -t ~/logs/cluster/archive-*.log ~/logs/cluster/nightly.log 2>/dev/null | head -1); [ -n "$l" ] && { echo "[cluster] $l:"; tail -5 "$l"; } || true'
 
 # ---- Isaac Sim on the GPU machine (docs/adr/0031) ----
 
@@ -4302,9 +4391,11 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     done <<< "$plan"
     echo "[safety] $n take(s): ${#kept[@]} kept, $setaside set aside, $unplanned not planned"
     [ "${#kept[@]}" -gt 0 ] || { echo "[safety] nothing kept: no dataset written" >&2; progress "$n" failed; exit 1; }
-    if [ "{{build}}" != true ]; then echo "[safety] build=false: no dataset written; the kept takes are listed in $kfile"; progress "$n" done; exit 0; fi
+    if [ "{{build}}" != true ]; then echo "[safety] build=false: no dataset written; the kept takes are listed in $kfile"; progress "$n" done; just cluster-archive takes/jetrover-isaac takes/jetrover-isaac-twin1 || echo "[safety] warning: the cluster archive failed; just cluster-archive retries" >&2; exit 0; fi
     progress "$n" building
     if SAFETY_BUILD_ARGS=$(echo ${SAFETY_BUILD_ARGS-} $build_args) just _isaac-safety-build "$name" "" "${kept[@]}"; then progress "$n" done "\"~/data/lerobot/jetrover-isaac-safety/$name\""; else progress "$n" failed; exit 1; fi
+    # The takes go to the cluster archive too (the build archives the dataset; the GPU machine keeps both as its working set).
+    just cluster-archive takes/jetrover-isaac takes/jetrover-isaac-twin1 || echo "[safety] warning: the cluster archive failed; just cluster-archive retries" >&2
 
 # Internal: write `takes` (paths on the GPU machine, already checked) as safety datasets named `name` under `out` there (default ~/data/lerobot/jetrover-isaac-safety), with ~/repos/safety's builder (teleop_lerobot safety-build), in the lab's and world-models' label formats with the sidecars of docs/adr/0038 decision 6 (neutral captions, clearance from ~/isaacsim/assets/clearance when it is there). One dataset per takes root (docs/adr/0038 L): one twin's takes are `name`, several twins' `name`_twin0, `name`_twin1, ..., since twins record at once on one clock and a dataset must not hold takes that overlap in time. SAFETY_BUILD_ARGS, when set, adds safety-build options: the recipes that call this one put their own first (isaac-safety-build: --caption, --split) and the caller's SAFETY_BUILD_ARGS and `build_args` after them, so a caller's option is kept and wins over theirs (e.g. --views --depth-masks 160x90 for the views and depth and masks, robot/lerobot/README.md). A split build writes <dataset>_<k>of<K>. From a local shell quote `out` as '~/scratch/...': unquoted, the local shell expands ~ to the laptop's home, which is not the GPU machine's. Takes of one dataset that overlap in time are refused, with nothing written and no retry. A build that fails otherwise is retried once into a fresh folder, a failed one set aside, and every attempt's full log kept beside it. (The one failure seen, 2026-11-15, was the LeRobot watcher deleting the half-written dataset, since fixed: it leaves the *-safety groups alone.)
 [positional-arguments]
@@ -4342,6 +4433,8 @@ _isaac-safety-build name out +takes:
     done
     exit 1
     REMOTE
+    # Every safety dataset built goes to the cluster archive too (docs/explorer-cluster.md "Data from the GPU machine").
+    case "{{out}}" in ""|"~/data/"*|"$HOME/data/"*) just cluster-archive lerobot/jetrover-isaac-safety || echo "[safety] warning: the cluster archive failed; just cluster-archive lerobot retries" >&2 ;; esac
 
 # The safety datasets from the takes several batches kept, one per twin (docs/adr/0037 amendment 7, docs/adr/0038 L): the takes listed in recordings/.drive/safety-batch.kept (twin 0's batch) and safety-batch-1.kept (twin 1's), as `twins` names them, in the order they were recorded (by their UTC names), written by the GPU machine's ~/repos/safety builder as ~/data/lerobot/jetrover-isaac-safety/<name> when they are one twin's, else <name>_twin0, <name>_twin1 (default name jetrover_<UTC>_<id>, as a batch names its own), with the sidecars of docs/adr/0038 decision 6 (robot/lerobot/README.md). The twins record at once on the GPU machine's one clock, and a dataset must not hold takes that overlap in time on it: the builder writes each takes root's takes as a dataset of its own, and refuses a dataset whose takes overlap. `out` writes them under another folder there instead (absolute or ~/...). `split` above 1 writes that many smaller datasets of each instead, <dataset>_<k>of<split>, split by layout (a replay group and a layout never on two sides; docs/adr/0038 items 20 and 21), and prints each one's scenario, outcome and contact mix. `caption` is neutral (every task "move the arm") or category (the scenario's name, as datasets before 2026-11-22). `build_args` adds safety-build options after these, as SAFETY_BUILD_ARGS in the environment does (both kept, build_args last; an option given twice takes the last): `--views --depth-masks 160x90` writes the view cameras and every camera's depth and masks (docs/adr/0038 V, "In the safety datasets"), e.g. `just isaac-safety-build 0,1 "" '~/scratch/agent-x' 1 neutral "--views --depth-masks 160x90"`. Quote `out` as '~/...' from a local shell: unquoted, ~ becomes the laptop's home. A take set aside or deleted since is left out. `just isaac-safety-batch-twins` runs it after its batches; run it by hand after batches run with build=false
 [group('isaac')]
@@ -4576,8 +4669,9 @@ isaac-safety-batch-twins takes="25" seed="1" n="2" categories="all" build="true"
         [ -s "$f" ] && ok+=("$t")
     done
     [ "${#ok[@]}" -gt 0 ] || { echo "[twins] no batch kept a take: no dataset" >&2; exit 1; }
-    if [ "{{build}}" != true ]; then echo "[twins] build=false: build later with just isaac-safety-build $(IFS=,; echo "${ok[*]}")"; exit $(( failed > 0 )); fi
+    if [ "{{build}}" != true ]; then echo "[twins] build=false: build later with just isaac-safety-build $(IFS=,; echo "${ok[*]}")"; just cluster-archive takes/jetrover-isaac takes/jetrover-isaac-twin1 || echo "[twins] warning: the cluster archive failed" >&2; exit $(( failed > 0 )); fi
     just isaac-safety-build "$(IFS=,; echo "${ok[*]}")" "" "" 1 neutral "$build_args"
+    just cluster-archive takes/jetrover-isaac takes/jetrover-isaac-twin1 || echo "[twins] warning: the cluster archive failed; just cluster-archive retries" >&2
     exit $(( failed > 0 ))
 
 # Build the LeRobot converter's environment on the GPU machine (docs/adr/0036), once and after robot/lerobot/requirements.txt changes: ~/isaacsim/lerobot-venv (Python 3.12) with that lerobot version, and pytest for just lerobot-test. Runs the pushed commit

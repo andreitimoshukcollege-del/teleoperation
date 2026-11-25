@@ -71,11 +71,15 @@ twins, the robot and the user's own changes. Every agent in `.claude/agents/` re
   - Your scratch is `/tmp/agent-<name>/` and `~/scratch/agent-<name>/`.
   - Disk was 234 GB free on 2026-11-22. A twin records about 10 GB an hour.
 - **Never delete takes, sessions or datasets** unless the user explicitly asks for exactly that set. List first, then confirm.
+- **Data is stored on the Explorer cluster** (docs/explorer-cluster.md "Data from the GPU machine", the user, 2026-11-25):
+  `/projects/world-models/<user>/teleop-data`.
+  - The GPU machine's `~/data` is the working set. Archive with `just cluster-archive`; safety batches do it themselves.
+  - Free space with `just cluster-prune <days>`: the dry run first, and the list goes to the user before `true`.
 - **The labmate** (account `seaqueue-cheng`):
   - He reads our takes and datasets through ACLs (`just isaac-share-scenarios`). A named ACL entry overrides a folder's
     "other" bits: give `r-x`, not `--x`, where he must list.
-  - Our account can write into his `~/Documents/SINRG/world-models/data_collection/jetrover_data/sim-data` through the
-    `users` group. His home folder is enter-only, so use full paths.
+  - **Don't touch anything in his home or folders** (the user, 2026-11-25), including the sim-data folder our account
+    can write to, unless the user explicitly asks for that delivery. He reads our data from the cluster archive.
   - Keep his and the user's personal details out of anything sent outside.
 - **Copying files:** `scp` is denied. Fetch a small result with `ssh host 'cat <file>' > <local>`, as the take tools do.
 

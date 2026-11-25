@@ -173,9 +173,13 @@ twins, the robot and the user's own changes. Every agent in `.claude/agents/` re
 - **Nothing moves without the user's confirmation.** That covers the arm, the servo driver and deploys: say what will move
   and how far, and wait.
 - **Never publish `/robot/buzzer`:** it crashes the arm driver.
-- **The Femto Bolt cameras.** Two Orbbec Femto Bolt third-person cameras (USB `2bc5:066b`, ports 1.4.2 = left and 1.4.3 =
-  right) show colour through V4L2. Depth and the sync hub need Orbbec's SDK. The user said (2026-11-19) they are not yet
-  placed as they will be for data collection, so don't build on them until told.
+- **The robot's cameras** (docs/adr/0014 amendment 4).
+  - **Placement.** Since 2026-11-24 they are placed for data collection. The exception is the DaBai (`front`), which is
+    temporarily in a third-person spot.
+  - **The Femto Bolts.** USB `2bc5:066b`: port 1.4.3 is `left` (6008) and 1.4.2 is `right` (6009). They stream colour
+    through V4L2. Depth, IR and the sync hub need Orbbec's SDK: `just femto-record`, untested.
+  - **Calibration.** `just camera-calib-record` records all three feeds for calibration, and
+    `scripts/gpu/charuco_calibrate.py` calibrates them. The calibration is valid only until a camera moves.
 
 ## 9. Licences, privacy, outside requests
 

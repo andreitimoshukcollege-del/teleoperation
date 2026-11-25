@@ -39,4 +39,4 @@ def test_the_camera_sidecars_and_visibility_see_only_the_cm_cameras(tmp_path):
     assert jb.tag("VW") and jb.tag("VP") and jb.tag("VS")
     rename = {"wrist": "front"}
     assert sidecars.cameras(jb, rename) == sidecars.cameras(ja, rename)
-    assert visibility.views(jb, rename) == visibility.views(ja, rename)
+    assert [repr(v) for v in visibility.views(jb, rename)] == [repr(v) for v in visibility.views(ja, rename)]

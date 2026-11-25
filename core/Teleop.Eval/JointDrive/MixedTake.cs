@@ -109,12 +109,7 @@ namespace Teleop.Eval.JointDrive
         /// it): low, mid and high, as aims meet objects (docs/adr/0038 "M, motion", the 2026-11-23 review: every blind goal low had the
         /// path's height telling a take that hits from one that does not; aims and free moves share one height distribution).
         /// </summary>
-        /// <remarks>
-        /// 22, 22, 20, 18 and 18% since round 7's twin check (30, 25, 20, 15, 10 before): counted as physics makes contacts, the held-out
-        /// scene's contacts crowded the -15 to -10 cm band (34%; on the twin 22 of its 44 contact events), where most of its objects present
-        /// themselves to the pads of a low hand.
-        /// </remarks>
-        public static float[] DefaultToolBands() => new[] { -0.180f, -0.130f, 0.22f, -0.130f, -0.080f, 0.22f, -0.080f, -0.030f, 0.20f, -0.030f, 0.020f, 0.18f, 0.020f, 0.080f, 0.18f };
+        public static float[] DefaultToolBands() => new[] { -0.180f, -0.130f, 0.30f, -0.130f, -0.080f, 0.25f, -0.080f, -0.030f, 0.20f, -0.030f, 0.020f, 0.15f, 0.020f, 0.080f, 0.10f };
 
         /// <summary>The speed caps (docs/adr/0038 decision 1, item 29): <see cref="DefaultCaps"/> unless told otherwise; null for none.</summary>
         public MotionCaps? Caps { get; set; } = DefaultCaps();

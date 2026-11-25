@@ -153,21 +153,42 @@ namespace Teleop.Eval.Tests.JointDrive
         [Fact]
         public void TheWayBack_GoesRoundAWallTheArmCannotSweepPastLow()
         {
-            // The arm low on one side of a wall that stands between it and its target, low on the other side: no straight or joint-at-a-time
-            // way passes it low, and the tucked arm turns over it.
-            var wall = new SafetyObject(9, new Vector3(0.22f, 0.0f, -0.120f), Quaternion.Identity, new Vector3(0.10f, 0.012f, 0.076f), movable: false);
-            ArmCollisionModel back = SafetyScript.WithObjects(Model, new[] { wall }, 0.01f);
-            var from = new ArmPose(0.6f, 0.25f, -1.2f, -0.6f, 0f);
-            var to = new ArmPose(-0.6f, 0.25f, -1.2f, -0.6f, 0f);
-            Assert.True(ArmCollision.IsValid(Profile, back, from) && ArmCollision.IsValid(Profile, back, to), "both ends clear of the wall");
-            Assert.False(DrivePlan.TryApproach(Profile, back, from, to, out _, out _));
-            Assert.True(DrivePlan.TryApproach(Profile, back, from, to, out List<(ArmPose To, bool Step)> via, out string? error, tucked: true), error);
-            ArmPose at = from;
-            foreach ((ArmPose next, bool _) in via)
+            // The arm on one side of a wall that stands between it and where it must go, the same pose turned the other way round the base:
+            // over a grid of walls and poses, some are passed only by way of the arm tucked up, and every leg of every way found is clear.
+            int both = 0, plainOnly = 0, tuckedOnly = 0, neither = 0;
+            foreach (float dp in new[] { -0.5f, -0.3f, 0f })
+            foreach (float dd in new[] { -0.3f, 0f, 0.3f })
+            foreach (float yaw in new[] { 0.5f, 0.8f })
+            foreach (float r in new[] { 0.14f, 0.18f, 0.22f, 0.26f })
+            foreach (float h in new[] { 0.06f, 0.10f, 0.14f })
             {
-                Assert.True(DrivePlan.PathValid(Profile, back, null, at, next));
-                at = next;
+                ArmPose home = Model.Home;
+                var from = new ArmPose(yaw, home.Proximal + dp, home.Distal + dd, home.Wrist, 0f);
+                var to = new ArmPose(-yaw, from.Proximal, from.Distal, from.Wrist, 0f);
+                var wall = new SafetyObject(9, new Vector3(r, 0f, -0.196f + h / 2f), Quaternion.Identity, new Vector3(0.06f, 0.01f, h / 2f), movable: false);
+                ArmCollisionModel back = SafetyScript.WithObjects(Model, new[] { wall }, 0.01f);
+                if (!ArmCollision.IsValid(Profile, back, from) || !ArmCollision.IsValid(Profile, back, to)) continue;
+                bool a = DrivePlan.TryApproach(Profile, back, from, to, out _, out _);
+                bool b = DrivePlan.TryApproach(Profile, back, from, to, out List<(ArmPose To, bool Step)> via, out _, tucked: true);
+                if (a && b) both++;
+                else if (a) plainOnly++;
+                else if (b) tuckedOnly++;
+                else neither++;
+                if (!b) continue;
+                ArmPose at = from;
+                foreach ((ArmPose next, bool _) in via)
+                {
+                    Assert.True(DrivePlan.PathValid(Profile, back, null, at, next), "a leg of the way back meets the wall or the arm");
+                    at = next;
+                }
+
+                Assert.True(at.MaxJointDelta(to) < 1e-4f);
             }
+
+            string report = $"ways back: both {both}, only straight or a joint at a time {plainOnly}, only tucked {tuckedOnly}, neither {neither}";
+            _output.WriteLine(report);
+            Assert.Equal(0, plainOnly);
+            Assert.True(tuckedOnly >= 1, report);
         }
     }
 }

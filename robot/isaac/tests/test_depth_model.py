@@ -443,4 +443,4 @@ def test_a_modelled_table_lands_back_on_the_table_through_the_pose(spec):
     got = depth_stats.plane_in_base(d, (g.x, g.y), pose)
     assert got["points"] > 100000 and got["medianZ"] == pytest.approx(-0.196, abs=0.004) and got["p99AbsMm"] < 15
     lit = depth_stats.lit_polygon(d > 0, (g.x, g.y))
-    assert 5 <= len(lit) <= 12 and min(p[1] for p in lit) < -0.5
+    assert 5 <= len(lit) <= 12 and max(p[1] for p in lit) > 0.5  # the table fills the lower view, cut by the hexagon

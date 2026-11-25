@@ -1943,8 +1943,9 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
 
     # With view cameras, a frame's streams are encoded on a pool of threads (Pillow and OpenCV let go of the GIL while they
     # encode): one thread spends about 18 ms a frame on the scene's three cameras, and a 1280x720 view adds about 24 ms.
-    # The depth model (docs/adr/0039) runs there too, about 21 ms a camera's frame on one thread.
-    encode_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="encode") if view_spec is not None or femto is not None else None
+    encode_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="encode") if view_spec is not None else None
+    if encode_pool is None and femto is not None:  # the depth model (docs/adr/0039) runs there too: ~21 ms a camera's frame
+        encode_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="encode")
 
     def encode_one(item):
         import cv2

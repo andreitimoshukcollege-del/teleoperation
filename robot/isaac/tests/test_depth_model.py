@@ -83,7 +83,7 @@ def test_every_shipped_model_reads_against_every_jetrover_scene():
 
 
 @pytest.mark.parametrize("path,value,why", [
-    ("format", "x", "format"), ("mode__fx", -1, "fx"), ("mode__minM", 9.0, "minM"), ("mode__cx", 700, "principal"),
+    ("format", "x", "teleop-depth-model"), ("mode__fx", -1, "fx"), ("mode__minM", 9.0, "minM"), ("mode__cx", 700, "principal"),
     ("mode__distortion", {"k9": 1}, "distortion"), ("mode__distortion", {"k1": 40.0}, "folds"),
     ("depthToColour__rotation", [[1, 0, 0], [0, 2, 0], [0, 0, 1]], "orthonormal"), ("depthToColour__translationM", [1, 0, 0], "translation"),
     ("illumination__polygonTan", [[0, 0], [1, 1]], "polygon"), ("noise__kernelPx", 0, "kernelPx"), ("reflectance__source", "nir", "source"),
@@ -119,7 +119,7 @@ def test_the_renderer_runs_the_model_only_behind_its_flag():
     assert "femto = depth_model_module.load(args.depth_model, cameras)" in src
     assert "if femto is not None:" in src
     assert "if i in femto_rigs:" in src  # a frame's camera loop: no rig, no job
-    assert 'view_spec is not None or femto is not None' in src  # the encode pool as before without either
+    assert "if encode_pool is None and femto is not None:" in src  # the encode pool as before without views or the model
     assert "femto_rigs.get(i, (None, None))[1] is not None" in src  # the jitter moves a depth sensor only if there is one
     for fn in ("femto_records", "femto_view_job"):
         body = src[src.index(f"def {fn}("):]

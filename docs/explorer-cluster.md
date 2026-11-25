@@ -176,7 +176,45 @@ The recipes stream files through ssh (`ssh explorer 'cat > f' < f`, `tar czf - |
 names a transfer node for large copies in its SSH instructions (`xfer.discovery.neu.edu`, for both clusters); use
 it with the same key for anything big, e.g.
 `rsync -av -e "ssh -i ~/.ssh/<user>-<stamp>" bundle.tar <user>@xfer.discovery.neu.edu:/projects/world-models/<user>/`.
-Robot recordings and data bundles may go there only with the user's say-so, as on the GPU machine.
+Robot recordings and data bundles go to `<user>/teleop-data` (next section); the user asked for it on 2026-11-25.
+
+## Data from the GPU machine
+
+Since 2026-11-25 the recorded data lives on the cluster, not on the GPU machine. The user's request: the 5090's disk is
+needed for the twins, and the lab space has 11 TB.
+
+- **Where:** `/projects/world-models/<user>/teleop-data/`, laid out as the GPU machine's `~/data` is: `takes/`,
+  `sessions/`, `lerobot/`, `network/`, `real-cameras/` (`calibration/`, `depth/`, `scenes/`). Files are group
+  `world-models`, readable and writable by the group and closed to others. The labmate (cheng.qian, in that group)
+  reads them there.
+- **How it gets there.** The GPU machine sends straight to RC's transfer node with the RC key. `just gpu-cluster-key`
+  put a copy of the key in the GPU account's `~/.ssh` (mode 600), with ssh hosts `explorer` and `explorer-xfer`.
+  `scripts/gpu/cluster_archive.sh` does the copying, using rsync. It adds and updates on the cluster and never deletes
+  there.
+- **Recipes:**
+  - `just cluster-archive [path under ~/data ...]` copies and checks, and waits until done.
+  - `just cluster-archive-start` does the same detached, for the big first copy.
+  - `just cluster-archive-schedule` sends new data every night at 03:30.
+  - `just cluster-data-status` shows sizes on both sides and the newest log.
+  - `just cluster-prune <days> [true]` frees the GPU machine (below).
+- **What stores there by itself:**
+  - **every dataset build:** each safety dataset build (`_isaac-safety-build`, under `isaac-safety-batch`,
+    `isaac-safety-batch-twins`, `isaac-safety-build`, `isaac-safety-rebuild`) archives `lerobot/jetrover-isaac-safety` when
+    it succeeds, and the LeRobot converter (`just lerobot-watch-start`) sends each dataset it changes, and that dataset's
+    takes, after every pass. The converter runs the archive in the background, one run at a time, and logs to
+    `~/logs/cluster/watcher-archive.log`;
+  - safety batches archive their takes when they end, kept or set aside;
+  - `just camera-calib-record` and `just femto-record` store their recordings from the operator PC (`_cluster-store`,
+    through the transfer node with the PC's key);
+  - the nightly entry, once it is installed, catches the rest: sessions, and anything a failed run left.
+- **The GPU machine keeps a working set.** Isaac and the LeRobot converter still write to its local `~/data`, because
+  dataset builds and the twins need local files. `just cluster-prune 14` lists the take and session folders untouched for
+  14 days whose cluster copy is identical (checksums), and `true` deletes exactly those. The user asked to see the list
+  before the first deletion. Datasets are never pruned by it: a superseded dataset is deleted by hand, by its path, once
+  the user agrees. A folder holding another account's file is never deleted.
+- **Only our own data.** The archive reads only the GPU account's `~/data` and writes only `<user>/teleop-data`. Nothing
+  in the labmate's home on the GPU machine, nor anything of other lab members in `/projects/world-models`, is touched
+  (the user, 2026-11-25).
 
 ## Changing the recipes
 

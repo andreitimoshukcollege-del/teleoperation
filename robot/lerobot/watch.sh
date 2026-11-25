@@ -67,7 +67,11 @@ launch() {
     if [ -n "$commit" ]; then (cd "$repo" && git fetch -q origin && git checkout -q "$commit"); fi
     cd "$repo/robot/lerobot"
     # 9>&- : the watcher must not inherit the lock, or every later start would wait on it for good.
-    nohup setsid "$venv/bin/python" -m teleop_lerobot watch "${roots[@]}" "${robot[@]}" --out "$out" >> "$log" 2>&1 < /dev/null 9>&- &
+    # The cluster archive (docs/explorer-cluster.md): changed datasets and takes go there after each pass, once the
+    # archive script is installed (just cluster-archive-start or cluster-archive-schedule installs it).
+    local archive=()
+    [ -x "$HOME/.local/bin/teleop-cluster-archive" ] && archive=(--archive "$HOME/.local/bin/teleop-cluster-archive archive" --data-root "$HOME/data")
+    nohup setsid "$venv/bin/python" -m teleop_lerobot watch "${roots[@]}" "${robot[@]}" --out "$out" "${archive[@]}" >> "$log" 2>&1 < /dev/null 9>&- &
     echo $! > "$pidfile"
     echo "[lerobot] $(date -u +%FT%TZ) watcher started at $(cd "$repo" && git log --oneline -1) (pid $!), log $log"
 }

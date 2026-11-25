@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Numerics;
+using Teleop.Core.Types;
 using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
@@ -85,6 +86,7 @@ namespace Teleop.Eval.JointDrive
             int blindMoves = 0, blindTouching = 0, blindTakes = 0; // layout-blind moves that meet a movable object's box by the model
             // docs/adr/0038 decision 2: the edits of a group of two replays, as joint-drive draws them
             var editKinds = new int[5];
+            var wayBack = new int[3]; // groups with an edit; of them, no way back to the source's start as before; and with the tucked way
             int groups = 0, addGroups = 0, addsMoved = 0, addsUnparked = 0, addsMet = 0, noEdit = 0;
             var addFirst = new List<double>();
             var addHeights = new List<float>();
@@ -218,6 +220,17 @@ namespace Teleop.Eval.JointDrive
                         Count(noAddWhy, key);
                     }
                     TallyEdits(profile, model, commanded, objects, edits, editTally);
+                    // A replay first goes back to where the source began, from where it ended, on the source's layout (SetupMove): straight or a
+                    // joint at a time, or (since round 7's twin check) by way of the arm tucked up.
+                    if (edits.Length > 0)
+                    {
+                        ArmCollisionModel back = SafetyScript.WithObjects(model, objects, 0.01f);
+                        ArmPose end = plan.Sample(plan.TotalSeconds), begin = plan.Sample(plan.ScriptStart);
+                        wayBack[0]++;
+                        if (!DrivePlan.TryApproach(profile, back, end, begin, out _, out _)) wayBack[1]++;
+                        if (!DrivePlan.TryApproach(profile, back, end, begin, out _, out _, tucked: true)) wayBack[2]++;
+                    }
+
                     if (edits.Length < 2) noEdit++;
                     foreach (ReplayEditDraw e in edits)
                     {
@@ -264,6 +277,8 @@ namespace Teleop.Eval.JointDrive
                     $"  replays, 2 a group as drawn (nothing refused offline): an add in {addGroups} of {groups} groups ({addsMoved} moving one of the layout's, {addsUnparked} a parked one); edits remove {editKinds[1]}, shift {editKinds[2]}, move {editKinds[3]}, add {editKinds[4]}; groups with fewer than 2 edits {noEdit}"));
                 Console.WriteLine(FormattableString.Invariant(
                     $"  adds: the arm meets the added object's box by the model in {addsMet} of {addGroups}, first {Percentiles(addFirst, "0.0")} s into the take; the added object's top mm above the table: {Percentiles(addHeights.Select(h => (double)h).ToList(), "0")}"));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"  replays' way back to where the source began (from its end, on its layout, 1 cm clear): none in {wayBack[1]} of {wayBack[0]} groups straight or a joint at a time; {wayBack[2]} also by way of the arm tucked up"));
                 Console.WriteLine("  aims' offsets mm (aimed at), 10 mm bins from -40: " + Histogram(offsets.Select(o => o * 1000.0), -40, 10, 10));
                 Console.WriteLine("  aims' offsets mm: " + Percentiles(offsets.Select(o => o * 1000.0).ToList(), "0"));
                 Console.WriteLine("  passes' offsets mm (closest on the line), 10 mm bins from -40: " + Histogram(passOffsets.Select(o => o * 1000.0), -40, 10, 9));
@@ -650,6 +665,48 @@ namespace Teleop.Eval.JointDrive
         internal sealed class LagTally
         {
             public int Takes, Planned, Onsets, AccidentOnsets, Records, ContactRecords, Accidents, AccidentContacts, FreeAccidents, Placed, PlacedContacts;
+            public int Events, AccidentEvents; // the onsets as contact events (ContactEvents), as the twin's physics makes them
+            public int Like, AccidentLike; // and physics-like: a tippy movable object gone after its first contact event
+            public readonly List<double> LikeTool = new List<double>();
+            public readonly Dictionary<string, int[]> LikeByKind = new Dictionary<string, int[]>();
+            public readonly Dictionary<(int Band, byte Id), int> LikeByBandObject = new Dictionary<(int, byte), int>(); // physics-like events by 5 cm band and object
+            public readonly List<(int Accidents, List<double> Tool)> LikeTakes = new List<(int, List<double>)>(); // each take's physics-like events
+
+            /// <summary>
+            /// What a twin pilot of <paramref name="takes"/> source takes would show (docs/adr/0038 "M, motion", round 7 on the twin): takes drawn
+            /// with replacement from the dry run's, 2000 times (seeded): the physics-like accident share's p10 / p50 / p90, and how often the
+            /// largest 5 cm band of the tool point holds more than 40%.
+            /// </summary>
+            public string Pilot(int takes)
+            {
+                if (LikeTakes.Count == 0) return "none";
+                var rng = new SeededRng(0x5EED_0007UL + (ulong)takes);
+                var shares = new List<double>();
+                int over = 0;
+                for (int b = 0; b < 2000; b++)
+                {
+                    int acc = 0;
+                    var bins = new int[64];
+                    int n = 0;
+                    for (int k = 0; k < takes; k++)
+                    {
+                        (int a, List<double> zs) = LikeTakes[(int)(rng.NextDouble() * LikeTakes.Count) % LikeTakes.Count];
+                        acc += a;
+                        foreach (double z in zs) bins[Math.Clamp((int)Math.Floor((z * 100.0 + 20.0) / 5.0), 0, 63)]++;
+                        n += zs.Count;
+                    }
+
+                    if (n == 0) continue;
+                    shares.Add(acc / (double)n);
+                    if (bins.Max() > 0.4 * n) over++;
+                }
+
+                shares.Sort();
+                string P(double q) => (100 * shares[Math.Min(shares.Count - 1, (int)Math.Round(q * (shares.Count - 1)))]).ToString("0", CultureInfo.InvariantCulture);
+                return FormattableString.Invariant($"{takes} source takes: accident share p10 {P(0.1)}%, p50 {P(0.5)}%, p90 {P(0.9)}%; a band over 40% in {100.0 * over / Math.Max(1, shares.Count):0}%");
+            }
+            public readonly List<double> EventTool = new List<double>();
+            public readonly Dictionary<string, int[]> EventsByKind = new Dictionary<string, int[]>(); // accident kind: events begun in its spans
             public readonly Dictionary<string, int[]> PlacedByKind = new Dictionary<string, int[]>();
             public readonly List<double> Tool = new List<double>(), Point = new List<double>();
             public readonly Dictionary<string, int> Links = new Dictionary<string, int>();
@@ -666,6 +723,22 @@ namespace Teleop.Eval.JointDrive
                 Console.WriteLine(FormattableString.Invariant($"    of the accidents, placed near an object {Placed}, with a contact {PlacedContacts}; by kind (placed, with a contact): ") +
                                   string.Join(", ", PlacedByKind.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value[0]}/{k.Value[1]}")));
                 Console.WriteLine("    tool point cm, 5 cm bins from -20: " + Histogram(Tool.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(Tool) + "); " + Spread(Tool));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"    as contact events (a re-touch within {ContactEvents.MergeSeconds:0.0} s of the object's release the same contact): {Events}, in an accident's span {AccidentEvents} ({100.0 * AccidentEvents / Math.Max(1, Events):0}%); tool point 5 cm bins from -20: ") +
+                    Histogram(EventTool.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(EventTool) + "); " + Spread(EventTool) + "; by accident kind: " +
+                    string.Join(", ", EventsByKind.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value[0]}")));
+                Console.WriteLine(FormattableString.Invariant(
+                    $"    physics-like (the events, a tippy movable object knocked over at its first and lying after): {Like}, in an accident's span {AccidentLike} ({100.0 * AccidentLike / Math.Max(1, Like):0}%); tool point 5 cm bins from -20: ") +
+                    Histogram(LikeTool.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(LikeTool) + "); " + Spread(LikeTool) + "; by accident kind: " +
+                    string.Join(", ", LikeByKind.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value[0]}")));
+                if (LikeByBandObject.Count > 0)
+                {
+                    int top = LikeByBandObject.GroupBy(k => k.Key.Band).OrderByDescending(g => g.Sum(x => x.Value)).First().Key;
+                    Console.WriteLine(FormattableString.Invariant($"    the largest band ({top * 5 - 20} to {top * 5 - 15} cm) by object: ") +
+                                      string.Join(", ", LikeByBandObject.Where(k => k.Key.Band == top).OrderByDescending(k => k.Value).Take(8).Select(k => $"{k.Key.Id} {k.Value}")));
+                }
+
+                Console.WriteLine("    a twin pilot's spread, physics-like (takes resampled): " + Pilot(8) + "; " + Pilot(20) + "; " + Pilot(60));
                 Console.WriteLine("    contact point cm, 5 cm bins from -20: " + Histogram(Point.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(Point) + ")");
                 Console.WriteLine("    touching link: " + Kinds(Links) + "; contact point by link, p50 cm: " +
                                   string.Join(", ", PointByLink.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => k.Key + " " + (k.Value.OrderBy(x => x).ElementAt(k.Value.Count / 2) * 100).ToString("0.0", CultureInfo.InvariantCulture))));
@@ -678,6 +751,84 @@ namespace Teleop.Eval.JointDrive
                 foreach (double z in zs) bins[Math.Clamp((int)Math.Floor((z * 100.0 + 20.0) / 5.0), 0, 63)]++;
                 return (100.0 * bins.Max() / zs.Count).ToString("0", CultureInfo.InvariantCulture) + "%";
             }
+        }
+
+        /// <summary>
+        /// Contact events (docs/adr/0038 "M, motion", round 7 on the twin): a touch of an object that begins within <see cref="MergeSeconds"/>
+        /// of the end of its last touch of that object continues that contact. Physics breaks a sustained push into several touches as the
+        /// object gives and the arm presses on, and the model, whose arm passes through an object, counts one going in and another coming
+        /// back; neither is a new contact.
+        /// </summary>
+        internal sealed class ContactEvents
+        {
+            public const double MergeSeconds = 0.5;
+            private readonly Dictionary<int, double> _end = new Dictionary<int, double>();
+
+            /// <summary>Object <paramref name="id"/> touched from <paramref name="t"/>: true when that begins a new contact.</summary>
+            public bool Begin(int id, double t) => !_end.TryGetValue(id, out double e) || t - e > MergeSeconds;
+
+            /// <summary>Object <paramref name="id"/> no longer touched from <paramref name="t"/>.</summary>
+            public void Stop(int id, double t) => _end[id] = t;
+        }
+
+        /// <summary>
+        /// Contacts as the twin's physics makes them (docs/adr/0038 "M, motion", round 7 on the twin): contact events (<see cref="ContactEvents"/>),
+        /// and a tippy movable object knocked over at its first: from then on it lies on the table where it fell (<see cref="Fallen"/>), and only
+        /// that is met. On the twin's pilots 28 of the 32 tippy objects touched tipped or slid away at the first touch; the model's later
+        /// contacts with them as they stood (40 events) were 10 in physics, low, with the object lying.
+        /// </summary>
+        internal sealed class PhysicsLike
+        {
+            private readonly SafetyObject[] _objects;
+            private readonly bool[] _fallen, _touching;
+            private readonly ContactEvents _events = new ContactEvents();
+
+            public PhysicsLike(IReadOnlyList<SafetyObject> objects)
+            {
+                _objects = objects.ToArray();
+                _fallen = new bool[_objects.Length];
+                _touching = new bool[_objects.Length];
+            }
+
+            /// <summary>
+            /// Object <paramref name="i"/> at time <paramref name="t"/>, the arm already placed (<see cref="ArmTouch.At"/>) and its touch of the
+            /// object as it stood given (<paramref name="touchingAsItStood"/>, <paramref name="link"/>): true when a new contact begins.
+            /// </summary>
+            public bool Step(ArmTouch arm, int i, double t, bool touchingAsItStood, ref ArmLink link)
+            {
+                bool now = touchingAsItStood;
+                if (_fallen[i]) now = arm.Touching(_objects[i], out link, out _);
+                if (!now && _touching[i]) _events.Stop(_objects[i].Id, t);
+                bool fresh = now && !_touching[i] && _events.Begin(_objects[i].Id, t);
+                _touching[i] = now;
+                if (fresh && !_fallen[i] && _objects[i].Movable && _objects[i].Tippy)
+                {
+                    _fallen[i] = true;
+                    _objects[i] = Fallen(_objects[i]);
+                    _events.Stop(_objects[i].Id, t); // touching it again as it falls is the same contact
+                    _touching[i] = false;
+                }
+
+                return fresh;
+            }
+        }
+
+        /// <summary>
+        /// A tippy object knocked over (<see cref="PhysicsLike"/>): its box lying on what it stood on, its height out along its bearing from the
+        /// base (an arm pushes outward more often than in), its narrowest side up, pivoted about its far bottom edge.
+        /// </summary>
+        internal static SafetyObject Fallen(in SafetyObject o)
+        {
+            float h = (o.Max.Z - o.Min.Z) / 2f;
+            Vector3 he = o.HalfExtents;
+            float narrow = MathF.Min(he.X, MathF.Min(he.Y, he.Z)), wide = he.X + he.Y + he.Z - MathF.Max(he.X, MathF.Max(he.Y, he.Z)) - narrow;
+            var radial = new Vector2(o.Center.X, o.Center.Y);
+            float r = radial.Length();
+            radial = r > 1e-4f ? radial / r : Vector2.UnitX;
+            Vector2 c = new Vector2(o.Center.X, o.Center.Y) + radial * MathF.Max(0f, h - narrow);
+            float yaw = MathF.Atan2(radial.Y, radial.X);
+            return new SafetyObject(o.Id, new Vector3(c.X, c.Y, o.Min.Z + narrow), Quaternion.CreateFromAxisAngle(Vector3.UnitZ, yaw), new Vector3(h, MathF.Max(narrow, wide), narrow),
+                o.Movable, o.Mass, false, null, o.Scenery, o.Role);
         }
 
         /// <summary>How long after an accident's recorded end a contact is still its own: the arm's lag behind the command (docs/adr/0038 "M, motion").</summary>
@@ -697,7 +848,7 @@ namespace Teleop.Eval.JointDrive
                 float[] target = { c.BaseYaw, c.Proximal, c.Distal, c.Wrist, c.Roll };
                 for (int j = 0; j < 5; j++) q[j] += (float)Math.Clamp((target[j] - q[j]) * a, -max, max);
                 float g = plan.GripperAt(at);
-                track.Add(new TrackPoint(t - plan.ScriptStart, new ArmPose(q[0], q[1], q[2], q[3], q[4]), float.IsNaN(g) ? 0f : g));
+                track.Add(new TrackPoint(t - plan.ScriptStart, TakeAudit.Sagged(q[0], q[1], q[2], q[3], q[4]), float.IsNaN(g) ? 0f : g));
             }
 
             return track;
@@ -721,16 +872,58 @@ namespace Teleop.Eval.JointDrive
             var contact = new bool[moves.Count];
             var touching = new bool[objects.Count];
             int onsets = 0;
+            var events = new ContactEvents();
+            var like = new PhysicsLike(objects);
+            int takeLikeAccidents = 0;
+            var takeLikeTool = new List<double>();
             foreach (TrackPoint p in track)
             {
                 arm.At(p.Pose, p.Gripper);
                 foreach (int i in reach)
                 {
                     bool now = arm.Touching(objects[i], out ArmLink link, out Vector3 point);
+                    if (!now && touching[i]) events.Stop(objects[i].Id, p.At);
+                    ArmLink likeLink = link;
+                    if (like.Step(arm, i, p.At, now, ref likeLink))
+                    {
+                        double tl = plan.ScriptStart + p.At;
+                        tally.Like++;
+                        tally.LikeTool.Add(arm.Tool.Z);
+                        var bandKey = (Math.Clamp((int)Math.Floor((arm.Tool.Z * 100.0 + 20.0) / 5.0), -1, 8), objects[i].Id);
+                        tally.LikeByBandObject[bandKey] = tally.LikeByBandObject.TryGetValue(bandKey, out int bo) ? bo + 1 : 1;
+                        takeLikeTool.Add(arm.Tool.Z);
+                        for (int k = 0; k < moves.Count; k++)
+                        {
+                            if (!ScriptMoveCodec.IsAccident(moves[k].Kind) || tl < moves[k].Start || tl > moves[k].End + LagSeconds) continue;
+                            tally.AccidentLike++;
+                            takeLikeAccidents++;
+                            string kn = ScriptMoveCodec.Name(moves[k].Kind) + (moves[k].Part == MovePart.NearAccident ? " placed" : "");
+                            if (!tally.LikeByKind.TryGetValue(kn, out int[]? lk)) tally.LikeByKind[kn] = lk = new int[1];
+                            lk[0]++;
+                            break;
+                        }
+                    }
+
                     if (now && !touching[i])
                     {
                         onsets++;
                         double t = plan.ScriptStart + p.At;
+
+                        if (events.Begin(objects[i].Id, p.At))
+                        {
+                            tally.Events++;
+                            tally.EventTool.Add(arm.Tool.Z);
+                            for (int k = 0; k < moves.Count; k++)
+                            {
+                                if (!ScriptMoveCodec.IsAccident(moves[k].Kind) || t < moves[k].Start || t > moves[k].End + LagSeconds) continue;
+                                tally.AccidentEvents++;
+                                string kn = ScriptMoveCodec.Name(moves[k].Kind) + (moves[k].Part == MovePart.NearAccident ? " placed" : "");
+                                if (!tally.EventsByKind.TryGetValue(kn, out int[]? ek)) tally.EventsByKind[kn] = ek = new int[1];
+                                ek[0]++;
+                                break;
+                            }
+                        }
+
                         int owner = -1;
                         for (int k = 0; k < moves.Count && owner < 0; k++)
                             if (ScriptMoveCodec.IsAccident(moves[k].Kind) && t >= moves[k].Start && t <= moves[k].End + LagSeconds) owner = k;
@@ -754,6 +947,7 @@ namespace Teleop.Eval.JointDrive
                 }
             }
 
+            tally.LikeTakes.Add((takeLikeAccidents, takeLikeTool));
             tally.Planned++;
             tally.Onsets += onsets;
             if (onsets > 0) tally.Takes++;

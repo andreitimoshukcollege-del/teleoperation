@@ -83,9 +83,9 @@ namespace Teleop.Eval.JointDrive
             "                   [--script mixed [--replays 0] [--max-joint-speed <rad/s>[,x4]] [--max-joint-accel <rad/s2>[,x4]] [--max-wrist-speed <m/s>]\n" +
             "                                   [--max-peak-speed <m/s>] [--no-caps] [--no-style | --style p,r,t,s] [--blind n,r,v,l[,q,h]] [--pause s,min,max] [--pullback s] [--pass-share s] [--object-share s]\n" +
             "                                   [--approach short,turn] [--offset-mm -40,60] [--tool-bands lo,hi,share,...|none]\n" +
-            "                                   [--accidents 0.12[,0.4] | --no-accidents] [--no-accident-aim] [--no-shared-heights] [--link-aims 0.2] [--accident-kinds jerk,overshoot,wrong-way,slip,rush[:weight]]]\n" +
+            "                                   [--accidents 0.12[,0.6] | --no-accidents] [--no-accident-aim] [--spend-touched] [--no-shared-heights] [--link-aims 0.2] [--accident-kinds jerk,overshoot,wrong-way,slip,rush[:weight]]]\n" +
             "                   [--dry-run --layouts 1-200 [--rows] [--features <csv>] [--chain] [--lag <s>]]\n" +
-            "                   [--dry-run --scene <file> --audit-take <take dir>... [--lag <s>] [--rows]]";
+            "                   [--dry-run --scene <file> --audit-take <take dir>... [--lag <s>] [--rows]] [--follow d,tau,v] [--follow-sag p,e,w]";
 
         public static int Run(string[] args)
         {
@@ -170,6 +170,12 @@ namespace Teleop.Eval.JointDrive
                             if (fo.Length != 3) throw new ArgumentException("--follow is three numbers: delay s, time constant s, joint speed rad/s");
                             (TakeAudit.FollowDelay, TakeAudit.FollowTau, TakeAudit.FollowSpeed) = (fo[0], fo[1], fo[2]);
                             break;
+                        case "--follow-sag":
+                            // the follower's sag under the arm's weight: shoulder, elbow, wrist pitch, rad (docs/adr/0038 "M, motion", round 7 on the twin)
+                            double[] sg = Next().Split(',').Select(x => double.Parse(x, NumberStyles.Float, CultureInfo.InvariantCulture)).ToArray();
+                            if (sg.Length != 3 || sg.Any(x => !(Math.Abs(x) <= 0.2))) throw new ArgumentException("--follow-sag is three numbers within 0.2 rad: shoulder, elbow, wrist pitch");
+                            (TakeAudit.FollowSag[1], TakeAudit.FollowSag[2], TakeAudit.FollowSag[3]) = (sg[0], sg[1], sg[2]);
+                            break;
                         case "--chain": dryOptions.Chain = true; break; // a dry run's layouts each from where the last left the arm, as the twin's takes
                         case "--lag": dryOptions.LagSeconds = Number(); break; // a dry run's adds look at the commanded way this late, as at a measured track
                         case "--max-joint-speed": PerJoint(Next(), Caps().JointSpeed, "--max-joint-speed"); break;
@@ -224,6 +230,7 @@ namespace Teleop.Eval.JointDrive
                         case "--no-caps": mixedOptions.Caps = null; break;
                         case "--no-accidents": mixedOptions.AccidentShare = mixedOptions.AccidentNearShare = 0; break;
                         case "--no-accident-aim": mixedOptions.AimAccidents = false; break; // the accidents near objects drawn as before 2026-11-24
+                        case "--spend-touched": mixedOptions.SpendTouched = true; break; // a touched tippy object is no later target (docs/adr/0038 "M, motion", round 7 on the twin; off by default)
                         case "--no-shared-heights": mixedOptions.SharedHeights = false; break; // aims' heights uniform over the object's, as before 2026-11-24
                         case "--link-aims": mixedOptions.LinkAimShare = Number(); break; // the share of object moves at a high object that a link meets
                         case "--accidents":
@@ -1167,7 +1174,7 @@ namespace Teleop.Eval.JointDrive
             ArmCollisionModel model = c.Profile.Collision!;
             if (!WorldView.TryObjects(c.Link.World!, out List<SafetyObject> now)) return false;
             ArmPose from = c.Link.Measured;
-            if (!DrivePlan.TryApproach(c.Profile, SafetyScript.WithObjects(model, now, 0.01f), from, to, out List<(ArmPose To, bool Step)> via, out string? error))
+            if (!DrivePlan.TryApproach(c.Profile, SafetyScript.WithObjects(model, now, 0.01f), from, to, out List<(ArmPose To, bool Step)> via, out string? error, tucked: true))
             {
                 Console.Error.WriteLine($"joint-drive: {error}");
                 return false;

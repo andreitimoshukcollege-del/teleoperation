@@ -179,6 +179,16 @@ namespace Teleop.Eval.JointDrive
         /// </summary>
         public double LinkAimShare { get; set; } = 0.2;
 
+        /// <summary>
+        /// Whether a tippy movable object the plan's arm has touched by the model is spent (docs/adr/0038 "M, motion", round 7 on the twin): no
+        /// later aim, pass or accident placed near objects is aimed at it, and the tail's goals keep away from it. On the twin 13 of the 15
+        /// tippy objects the views pilot touched tipped or moved at that first touch, and the model's later contacts with them (15 contact
+        /// events) became 6 in physics. Off by default (as before: only an aim planned into a movable object spends it, and accidents
+        /// placed near objects take any): counted as physics makes contacts (<see cref="MixedDryRun.PhysicsLike"/>) it gave fewer contacts
+        /// and a smaller share from accidents, not more (docs/adr/0038 "M, motion", round 7 on the twin).
+        /// </summary>
+        public bool SpendTouched { get; set; }
+
         /// <summary>The accidents' kinds, in proportion: jerk, overshoot, wrong way, slip, rush (<see cref="AccidentKinds"/>).</summary>
         public double[] AccidentWeights { get; set; } = { 1, 1, 1, 1, 1 };
 
@@ -814,6 +824,39 @@ namespace Teleop.Eval.JointDrive
         private int _nextDraft;
         private int _nearTried, _nearMade, _nearTries, _nearUnreachable, _nearRefused; // accidents placed near objects, for the report
 
+        /// <summary>
+        /// <see cref="MixedOptions.SpendTouched"/>: every tippy movable object the hand's ticks since the last look touch by the model (the
+        /// twin's links against its shape, else its box) is spent from now on, as an aim planned into a movable object is.
+        /// </summary>
+        private void NoteSpent()
+        {
+            if (!_options.SpendTouched) return;
+            int n = Math.Min(_hand.Poses.Count, _hand.Commands.Count);
+            if (_spentScan >= n) return;
+            _touch ??= new ArmTouch(_profile, _model);
+            for (int k = _spentScan; k < n; k++)
+            {
+                bool any = false;
+                for (int i = 0; i < _objects.Count && !any; i++)
+                    any = _objects[i].Movable && _objects[i].Tippy && !_objects[i].Scenery && !_moved.Contains(i);
+                if (!any) break;
+                float g = _hand.Commands[k].Gripper;
+                _touch.At(_hand.Poses[k], float.IsNaN(g) ? 0f : g);
+                for (int i = 0; i < _objects.Count; i++)
+                {
+                    SafetyObject o = _objects[i];
+                    if (!o.Movable || !o.Tippy || o.Scenery || _moved.Contains(i) || !_touch.Touches(o)) continue;
+                    _moved.Add(i);
+                    _avoid.Add(new Vector2(o.Center.X, o.Center.Y));
+                }
+            }
+
+            _spentScan = n;
+        }
+
+        private int _spentScan;
+        private ArmTouch? _touch;
+
         /// <summary>The arm's signed gap to object <paramref name="oi"/> at <paramref name="pose"/>: against its shape with the twin's links (the gripper as given), else its box with the model's.</summary>
         private float Gap(int oi, in ArmPose pose, float gripper)
         {
@@ -925,6 +968,7 @@ namespace Teleop.Eval.JointDrive
         /// <summary>An aim or a pass at an object of the layout (a few tries over objects and geometries), with the move to where it starts; false when none plans.</summary>
         private bool TryObjectMove(ScriptMoveKind? accident = null)
         {
+            NoteSpent();
             var targets = new List<int>(_objects.Count);
             var weights = new List<float>(_objects.Count);
             for (int i = 0; i < _objects.Count; i++)
@@ -991,12 +1035,14 @@ namespace Teleop.Eval.JointDrive
         private bool TryNearAccident(ScriptMoveKind kind)
         {
             const double deg = Math.PI / 180.0;
+            NoteSpent();
             var targets = new List<int>(_objects.Count);
             for (int i = 0; i < _objects.Count; i++)
             {
                 SafetyObject o = _objects[i];
                 if (o.Scenery || o.Role == SceneRole.Stand || o.Role == SceneRole.Support || !HeightRange(i, out _, out _)) continue;
                 if (new Vector2(o.Center.X, o.Center.Y).Length() - Footprint(o) >= 0.40f) continue;
+                if (_options.SpendTouched && _moved.Contains(i)) continue; // knocked over or pushed away by now, most likely
                 targets.Add(i);
             }
 

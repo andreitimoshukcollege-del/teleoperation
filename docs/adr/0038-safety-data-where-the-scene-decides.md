@@ -2545,3 +2545,6 @@ bench):
 3. **One `safety-holdout` take** passes the same check with split `test`.
 4. **The contact sheet.** The safety views sit all round the table except the robot's left side. The held-out ones sit on that
    side. Each sees the table, the arm and the objects.
+
+**Gates** on 5dc7a10 (`scripts/gpu/gate.sh isaac lerobot`): isaac 353 passed and 8 skipped; lerobot 143 passed. No C#
+changed, so the core and bridge gates were not run. Nothing here has run in Isaac yet.

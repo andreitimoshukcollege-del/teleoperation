@@ -109,7 +109,12 @@ namespace Teleop.Eval.JointDrive
         /// it): low, mid and high, as aims meet objects (docs/adr/0038 "M, motion", the 2026-11-23 review: every blind goal low had the
         /// path's height telling a take that hits from one that does not; aims and free moves share one height distribution).
         /// </summary>
-        public static float[] DefaultToolBands() => new[] { -0.180f, -0.130f, 0.30f, -0.130f, -0.080f, 0.25f, -0.080f, -0.030f, 0.20f, -0.030f, 0.020f, 0.15f, 0.020f, 0.080f, 0.10f };
+        /// <remarks>
+        /// 22, 22, 20, 18 and 18% since round 7's twin check (30, 25, 20, 15, 10 before): counted as physics makes contacts, the held-out
+        /// scene's contacts crowded the -15 to -10 cm band (34%; on the twin 22 of its 44 contact events), where most of its objects present
+        /// themselves to the pads of a low hand.
+        /// </remarks>
+        public static float[] DefaultToolBands() => new[] { -0.180f, -0.130f, 0.22f, -0.130f, -0.080f, 0.22f, -0.080f, -0.030f, 0.20f, -0.030f, 0.020f, 0.18f, 0.020f, 0.080f, 0.18f };
 
         /// <summary>The speed caps (docs/adr/0038 decision 1, item 29): <see cref="DefaultCaps"/> unless told otherwise; null for none.</summary>
         public MotionCaps? Caps { get; set; } = DefaultCaps();
@@ -152,10 +157,10 @@ namespace Teleop.Eval.JointDrive
         /// On top of <see cref="AccidentShare"/>, the share of the main part's would-be layout-blind parts that are a move to a point near an object (a few cm off
         /// its surface, at a height it stands over) with an accident in it (drawn from the accidents' own generator too; when none plans, a
         /// layout-blind part carries it): accidents placed near objects, so about a third of the contacts come from accidents (docs/adr/0038
-        /// "M, motion"). Recorded as a <c>free</c> move with its accident. 0.8 since round 7's twin check (0.6 from the 2026-11-24 review, 0.4
-        /// before): with <see cref="SpendTouched"/> the objects already knocked over are no longer targets, and fewer parts find one.
+        /// "M, motion"). Recorded as a <c>free</c> move with its accident. 0.6 since the 2026-11-24 review (0.4 before): on the twin, replays'
+        /// adds bring contacts of their own, none from accidents.
         /// </summary>
-        public double AccidentNearShare { get; set; } = 0.8;
+        public double AccidentNearShare { get; set; } = 0.6;
 
         /// <summary>
         /// Whether the accidents placed near objects are aimed at them (docs/adr/0038 "M, motion", the 2026-11-24 review): a jerk, an overshoot, a
@@ -183,10 +188,11 @@ namespace Teleop.Eval.JointDrive
         /// Whether a tippy movable object the plan's arm has touched by the model is spent (docs/adr/0038 "M, motion", round 7 on the twin): no
         /// later aim, pass or accident placed near objects is aimed at it, and the tail's goals keep away from it. On the twin 13 of the 15
         /// tippy objects the views pilot touched tipped or moved at that first touch, and the model's later contacts with them (15 contact
-        /// events) became 6 in physics; accidents placed at a dowel already lying on the table made no contact. Off: as before (only an
-        /// aim planned into a movable object spends it, and accidents placed near objects take any).
+        /// events) became 6 in physics. Off by default (as before: only an aim planned into a movable object spends it, and accidents
+        /// placed near objects take any): counted as physics makes contacts (<see cref="MixedDryRun.PhysicsLike"/>) it gave fewer contacts
+        /// and a smaller share from accidents, not more (docs/adr/0038 "M, motion", round 7 on the twin).
         /// </summary>
-        public bool SpendTouched { get; set; } = true;
+        public bool SpendTouched { get; set; }
 
         /// <summary>The accidents' kinds, in proportion: jerk, overshoot, wrong way, slip, rush (<see cref="AccidentKinds"/>).</summary>
         public double[] AccidentWeights { get; set; } = { 1, 1, 1, 1, 1 };

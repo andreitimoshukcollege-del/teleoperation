@@ -1476,6 +1476,17 @@ namespace Teleop.Eval.JointDrive
 
             _tryingPass = kind == ScriptMoveKind.Pass;
             if (_tryingPass) _passTries++;
+            float rOther = float.NaN; // a pass's radius on the object's other side, the same distance from its middle
+            float s0 = -(halfTangential + 0.32f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfTangential + 0.12f;
+            void Arc(List<Vector3> into, float r)
+            {
+                for (float a = s0; a <= s1 + 1e-6f; a += LineStepMeters)
+                {
+                    float phi = bearing + side * a / r;
+                    into.Add(new Vector3(r * MathF.Cos(phi), r * MathF.Sin(phi), h + slope * a));
+                }
+            }
+
             if (kind == ScriptMoveKind.Pass || !Draw.Chance(ref _rng, RadialShare))
             {
                 float rLine;
@@ -1485,16 +1496,15 @@ namespace Teleop.Eval.JointDrive
                     float out_ = Draw.Chance(ref _rng, 0.5) ? 1f : -1f;
                     // Through a movable object, or beside it; a fixture only grazed or passed (it does not give way), but under a plank anywhere.
                     rLine = rObj + out_ * (float)(o.Movable || under ? Draw.Uniform(ref _rng, 0, halfRadial + 0.07) : Draw.Uniform(ref _rng, halfRadial - 0.010, halfRadial + 0.07));
+                    rOther = 2f * rObj - rLine;
+                    // Inside the base's 10 cm, the other side (round 7: a third of the passes' lines found no first pose, nearer the base than
+                    // about 16 cm or beyond about 36 cm, where the other side often reaches).
+                    if (rLine < 0.10f) (rLine, rOther) = (rOther, float.NaN);
+                    if (rOther < 0.10f) rOther = float.NaN;
                 }
 
                 if (rLine < 0.10f) return Miss(1);
-                float s0 = -(halfTangential + 0.32f), s1 = kind == ScriptMoveKind.Aim ? 0f : halfTangential + 0.12f;
-                for (float a = s0; a <= s1 + 1e-6f; a += LineStepMeters)
-                {
-                    float phi = bearing + side * a / rLine;
-                    tools.Add(new Vector3(rLine * MathF.Cos(phi), rLine * MathF.Sin(phi), h + slope * a));
-                }
-
+                Arc(tools, rLine);
                 approach = side * 90f;
             }
             else
@@ -1513,13 +1523,27 @@ namespace Teleop.Eval.JointDrive
             float radius = new Vector2(tools[meet].X, tools[meet].Y).Length();
             // The wrist pitched for the height (PitchAt, as a layout-blind goal there is): pointing down near the table, near level high up a
             // tall object, so the pads lead into it rather than the wrist above them.
-            float pitch = PitchAt(radius, tools[meet].Z) + (float)(Draw.Uniform(ref _rng, -8, 8) * deg);
+            float jitter = (float)(Draw.Uniform(ref _rng, -8, 8) * deg), pitch = PitchAt(radius, tools[meet].Z) + jitter;
             float gripper = _hand.GripperEnd;
             List<Vector3>? wrists = null;
             List<ArmPose>? poses = null;
             List<float>? gaps = null;
             int first = 0;
-            if (Line(oi, tools, meet, ref pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g, out int f0)) (wrists, poses, gaps, first) = (w, q, g, f0);
+            // A pass needs its line on both sides of the object, an aim only before it: a pass tries more of the pitches that reach its first
+            // point, then the same distance on the object's other side (docs/adr/0038 "M, motion", round 7: 7 of 349 passes tried on the
+            // bench's layouts 1-60 planned, against 151 of 1399 aims, so a take had a pass in about one in ten).
+            bool pass = kind == ScriptMoveKind.Pass;
+            if (Line(oi, tools, meet, ref pitch, gripper, out List<Vector3> w, out List<ArmPose> q, out List<float> g, out int f0, pass ? PassUsable : null, pass ? PassPitches : 1))
+                (wrists, poses, gaps, first) = (w, q, g, f0);
+            if (pass && !float.IsNaN(rOther) && (wrists == null || !PassUsable(wrists, gaps!)))
+            {
+                var other = new List<Vector3>(tools.Count);
+                Arc(other, rOther);
+                int meet2 = Meets(o, other);
+                float pitch2 = PitchAt(new Vector2(other[meet2].X, other[meet2].Y).Length(), other[meet2].Z) + jitter;
+                if (Line(oi, other, meet2, ref pitch2, gripper, out w, out q, out g, out f0, PassUsable, PassPitches) && PassUsable(w, g))
+                    (wrists, poses, gaps, first, tools, pitch) = (w, q, g, f0, other, pitch2);
+            }
 
             if (wrists == null || poses == null || gaps == null) return Miss(1);
 
@@ -1805,9 +1829,12 @@ namespace Teleop.Eval.JointDrive
         /// <paramref name="meet"/>, where the path meets it, back toward the start and on toward the end), each part as far as its
         /// poses are in reach, in the envelope, free of the robot's own model and on one branch. The wrist targets in order, their
         /// poses, the arm's gap to the object at each, and the index in <paramref name="tools"/> of the first.
+        /// With <paramref name="usable"/> (a pass's, which needs its line on both sides of the object), the pitches that reach the
+        /// first point are tried in turn, nearest the middle first, up to <paramref name="pitches"/> of them, until a line is usable;
+        /// when none is, the first one's line (docs/adr/0038 "M, motion", round 7).
         /// </summary>
         private bool Line(int oi, List<Vector3> tools, int meet, ref float pitch, float gripper, out List<Vector3> wrists, out List<ArmPose> poses, out List<float> gaps,
-            out int firstIndex)
+            out int firstIndex, Func<List<Vector3>, List<float>, bool>? usable = null, int pitches = 1)
         {
             int n = tools.Count;
             wrists = new List<Vector3>(n);
@@ -1816,7 +1843,6 @@ namespace Teleop.Eval.JointDrive
             firstIndex = 0;
             var wrist = new Vector3?[n];
             var solved = new ArmPose[n];
-            int seed = -1;
             // A first pose as near the object as the path has one, at the pitch asked for or the nearest one that reaches it (the
             // solver refuses what would hit the floor or the arm itself, and the envelope what bends a joint too far: which
             // pitches reach a point near the table changes with its radius and height); then outward from it both ways.
@@ -1828,49 +1854,88 @@ namespace Teleop.Eval.JointDrive
                 else if (works.Count > 0 && k >= 2) break; // past the run of pitches that work on this side
             }
 
-            if (works.Count > 0)
-            {
-                // The middle of the pitches that work, as near the one drawn as that allows: a line pitched at the edge of what reaches
-                // its first point breaks a step or two on.
-                var degrees = works.Select(k => SeedPitchSteps[k]).OrderBy(d => d).ToList();
-                float middle = degrees[degrees.Count / 2];
-                int best = works.OrderBy(k => MathF.Abs(SeedPitchSteps[k] - middle)).First();
-                pitch = PitchStep(asked, best);
-                seed = Seed(tools, meet, pitch, wrist, solved);
-            }
-
-            if (seed < 0)
+            if (works.Count == 0)
             {
                 _lineBreaks[0]++;
                 return false;
             }
 
-            int first = seed, last = seed;
-            for (int i = seed - 1; i >= 0; i--)
+            // The middle of the pitches that work, as near the one drawn as that allows: a line pitched at the edge of what reaches
+            // its first point breaks a step or two on.
+            var degrees = works.Select(k => SeedPitchSteps[k]).OrderBy(d => d).ToList();
+            float middle = degrees[degrees.Count / 2];
+            List<int> order = works.OrderBy(k => MathF.Abs(SeedPitchSteps[k] - middle)).ToList();
+            float firstPitch = 0f;
+            int firstFirst = 0;
+            List<Vector3>? w0 = null;
+            List<ArmPose>? q0 = null;
+            List<float>? g0 = null;
+            for (int r = 0; r < Math.Min(Math.Max(1, pitches), order.Count); r++)
             {
-                if (!wrist[i].HasValue) { _lineBreaks[5]++; break; }
-                int why = Why(solved[i + 1], wrist[i]!.Value, pitch, out solved[i]);
-                if (why > 0) { _lineBreaks[why]++; break; }
-                first = i;
+                float p = PitchStep(asked, order[r]);
+                int seed = Seed(tools, meet, p, wrist, solved);
+                if (seed < 0) continue;
+                int first = seed, last = seed;
+                for (int i = seed - 1; i >= 0; i--)
+                {
+                    if (!wrist[i].HasValue) { _lineBreaks[5]++; break; }
+                    int why = Why(solved[i + 1], wrist[i]!.Value, p, out solved[i]);
+                    if (why > 0) { _lineBreaks[why]++; break; }
+                    first = i;
+                }
+
+                for (int i = seed + 1; i < n; i++)
+                {
+                    if (!wrist[i].HasValue) { _lineBreaks[5]++; break; }
+                    int why = Why(solved[i - 1], wrist[i]!.Value, p, out solved[i]);
+                    if (why > 0) { _lineBreaks[why]++; break; }
+                    last = i;
+                }
+
+                var w = new List<Vector3>(last - first + 1);
+                var q = new List<ArmPose>(last - first + 1);
+                var g = new List<float>(last - first + 1);
+                for (int i = first; i <= last; i++)
+                {
+                    w.Add(wrist[i]!.Value);
+                    q.Add(solved[i]);
+                    g.Add(Gap(oi, solved[i], gripper));
+                }
+
+                if (w.Count >= 3 && (usable == null || usable(w, g)))
+                {
+                    (wrists, poses, gaps, firstIndex, pitch) = (w, q, g, first, p);
+                    return true;
+                }
+
+                if (w0 == null) (w0, q0, g0, firstFirst, firstPitch) = (w, q, g, first, p);
             }
 
-            for (int i = seed + 1; i < n; i++)
+            if (w0 == null)
             {
-                if (!wrist[i].HasValue) { _lineBreaks[5]++; break; }
-                int why = Why(solved[i - 1], wrist[i]!.Value, pitch, out solved[i]);
-                if (why > 0) { _lineBreaks[why]++; break; }
-                last = i;
+                _lineBreaks[0]++;
+                return false;
             }
 
-            for (int i = first; i <= last; i++)
-            {
-                wrists.Add(wrist[i]!.Value);
-                poses.Add(solved[i]);
-                gaps.Add(Gap(oi, solved[i], gripper));
-            }
-
-            firstIndex = first;
+            (wrists, poses, gaps, firstIndex, pitch) = (w0, q0!, g0!, firstFirst, firstPitch);
             return wrists.Count >= 3;
+        }
+
+        /// <summary>How many of the pitches that reach a pass's first point its line tries (<see cref="Line"/>).</summary>
+        private const int PassPitches = 3;
+
+        /// <summary>
+        /// Whether a pass's line goes on both sides of its object far enough to be made (the checks <see cref="TryObjectMove(int, ScriptMoveKind, ScriptMoveKind?)"/>
+        /// makes of it, without its draws): at least 3 cm of it before its closest point, and past that point until the gap opens 1 cm.
+        /// </summary>
+        private static bool PassUsable(List<Vector3> wrists, List<float> gaps)
+        {
+            int closest = 0;
+            for (int i = 1; i < gaps.Count; i++) if (gaps[i] < gaps[closest]) closest = i;
+            if (Vector3.Distance(wrists[0], wrists[closest]) < 0.03f) return false;
+            int exit = closest;
+            while (exit < gaps.Count && gaps[exit] < Math.Max(gaps[closest], 0f) + 0.010f) exit++;
+            return exit < gaps.Count;
         }
 
         private static float PitchStep(float asked, int k) => Math.Clamp(asked + SeedPitchSteps[k] * MathF.PI / 180f, -89f * MathF.PI / 180f, -8f * MathF.PI / 180f);

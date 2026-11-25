@@ -7,7 +7,8 @@ For each take:
 
 1. **Records against the draws.** It needs ``isaac/views.json``, one ``VS`` and a ``VW`` per camera, and ``VW`` must equal
    ``views.draw`` of the spec, the scene, ``BK``'s seed and the change: the same place, look-at point, field of view, mode and
-   motion, and the same pose to 0.01 mm and 0.001°. It also needs no fallback draw.
+   motion, and the same pose to 0.01 mm and 0.001°. It also needs no fallback draw, and with a spec's held-out region
+   (``heldOut``, ``split``) every view on its split's side of it.
 2. **Every recorded frame carries every view's streams**, and a ``VP`` for each moving view.
 3. **Each view's pose in its own depth.** Table pixels (mask id 10) are back-projected through the view's pose, the ``VW``
    pose for a static view and the frame's ``VP`` for a moving one. On the table top's footprint they must land on the top
@@ -114,6 +115,11 @@ def check_take(take, sheet):
                               "broken": r["broken"]}
         if list(v.broken) != r["broken"]:
             out["problems"].append(f"{v.id}'s VW broken rules {r['broken']} are not the check's {list(v.broken)}")
+        if spec.split:  # a train spec's views outside its held-out region, a test spec's inside it
+            side = views.split_of(spec.doc, r["azimuthDeg"], r["elevationDeg"])
+            out["views"][v.id]["split"] = side
+            if side != spec.split:
+                out["problems"].append(f"{v.id} is on the {side} side of the held-out region, in a {spec.split} spec")
 
     vfs = rec.get("VF", [])
     vps = {int(r[0]): vp_poses(r) for r in rec.get("VP", [])}

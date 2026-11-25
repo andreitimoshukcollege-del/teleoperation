@@ -326,7 +326,8 @@ def test_the_shelf_stays_out_of_every_views_sight_in_every_scene():
     from teleop_isaac.world import RESIZE_SCALES, IsaacWorld
     for path in SCENES:
         s = scene_module.load(path)
-        for spec_path in (RECON, RECON_720, os.path.join(ROOT, "views", "fixed-example.json")):
+        for spec_path in (RECON, RECON_720, os.path.join(ROOT, "views", "fixed-example.json"),
+                          os.path.join(ROOT, "views", "safety.json"), os.path.join(ROOT, "views", "safety-holdout.json")):
             sp = views.load(spec_path, count=-1 if "fixed" in spec_path else views.MAX_COUNT)
             sight = [views.sight(sp)]
             world = IsaacWorld(s, "/robot")
@@ -564,3 +565,133 @@ def test_the_renderer_draws_and_meters_views_only_at_a_change_so_a_kept_look_kee
     assert "keep_look" in ast.unparse(first_if.test) and isinstance(first_if.body[-1], ast.Return)
     appends = [n for n in ast.walk(on_closed) if isinstance(n, ast.Call) and ast.unparse(n.func) == "want_backdrop_change.append"]
     assert len(appends) == 1 and appends[0].lineno > first_if.body[-1].lineno
+
+
+# --- the held-out region (docs/adr/0038 V, "Views in safety batches") ----------------------------------------------------
+
+HOLDOUT = os.path.join(ROOT, "views", "safety-holdout.json")
+
+
+def test_the_specs_without_a_held_out_region_draw_exactly_as_before():
+    """The draws of recon, recon-720 and fixed-example (and recon at 4 cameras), hashed over their VW records: the same as
+    before heldOut existed (measured on c3503b9's views.py)."""
+    import hashlib
+    h = hashlib.sha256()
+    for name in ("recon", "recon-720", "fixed-example"):
+        s = views.load(os.path.join(ROOT, "views", name + ".json"))
+        assert s.held_out is None and s.split == ""
+        for sp in ([s] if name == "fixed-example" else [s, s.with_count(4)]):
+            g = views.geometry(sp, scene_module.load(MIXED))
+            for seed in range(1, 41):
+                for v in views.draw(sp, g, seed, seed % 9):
+                    h.update("|".join(field(x) for x in views.vw_fields(sp, v, seed % 9, 1.0)).encode())
+    assert h.hexdigest() == "b772805635a1fd0976bba29d96f853b7465e943940482afb2c2e4ceba124f6f1"
+
+
+def test_the_safety_specs_share_one_held_out_region_and_differ_only_in_their_side_of_it():
+    train, test = views.load(SAFETY), views.load(HOLDOUT)
+    assert (train.split, test.split) == ("train", "test")
+    assert train.held_out == test.held_out == views.Region((60.0, 120.0), (-10.0, 89.0))
+    a, b = doc(SAFETY), doc(HOLDOUT)
+    assert a["heldOut"] == b["heldOut"]
+    assert {k for k in set(a) | set(b) if a.get(k) != b.get(k)} == {"notes", "azimuthDeg", "split"}
+    assert (a["azimuthDeg"], b["azimuthDeg"]) == ([0, 360], [65, 115])  # the test views 5 degrees in from the region's edges
+    assert test.count == 1 and test.moving is None and train.sha256 != test.sha256
+
+
+def test_training_never_draws_a_held_out_direction_and_the_test_spec_only_draws_there(mixed):
+    for path, side in ((SAFETY, "train"), (HOLDOUT, "test")):
+        s = views.load(path, count=2)
+        geo = views.geometry(s, mixed)
+        n = 0
+        for seed in range(1, 301):
+            drawn = views.draw(s, geo, seed, seed % 11)
+            for i, v in enumerate(drawn):
+                n += 1
+                assert v.mode == "static" and v.attempts != views.FALLBACK
+                assert views.broken_rules(s, geo, v, [w.sight() for w in drawn[:i]]) == []
+                assert s.held_out.contains(v.azimuth, v.elevation) == (side == "test")
+                parts = "|".join(field(x) for x in ("VW", *views.vw_fields(s, v, 1))).split("|")
+                r = views.parse_vw(parts[1:])
+                assert views.split_of(s.doc, r["azimuthDeg"], r["elevationDeg"]) == side  # as a dataset reader tells it
+                if side == "test":
+                    assert 65.0 <= v.azimuth <= 115.0
+                # The line of sight's own direction is the drawn one: the region is one of viewing directions.
+                sx, sy, sz = v.sight()
+                assert abs(math.degrees(math.atan2(-sy, -sx)) % 360.0 - v.azimuth) < 1e-6
+                assert abs(math.degrees(math.asin(-sz)) - v.elevation) < 1e-6
+        assert n == 600
+
+
+def test_the_test_views_cover_the_region_at_every_elevation_and_distance(mixed):
+    s = views.load(HOLDOUT)
+    vs = [views.draw(s, views.geometry(s, mixed), seed, 0)[0] for seed in range(1, 201)]
+    assert min(v.azimuth for v in vs) < 70 and max(v.azimuth for v in vs) > 110
+    assert min(v.elevation for v in vs) < 15 and max(v.elevation for v in vs) > 70
+    assert min(v.distance for v in vs) < 0.8 and max(v.distance for v in vs) > 1.6
+
+
+def test_even_a_fallback_train_view_stays_out_of_the_region(mixed):
+    d = doc(SAFETY)
+    d["accept"] = dict(d["accept"], maxAttempts=2, cover=0.99)  # nothing passes: every view is a fallback
+    s = views.parse(d)
+    geo = views.geometry(s, mixed)
+    out = [views.draw(s, geo, seed, 0)[0] for seed in range(1, 200)]
+    assert all(v.attempts == views.FALLBACK and not s.held_out.contains(v.azimuth, v.elevation) for v in out)
+
+
+def test_a_view_from_a_spec_without_a_region_has_no_split():
+    assert views.split_of(doc(RECON), 90.0, 30.0) == ""
+    assert views.split_of(doc(SAFETY), 90.0, 30.0) == "test" and views.split_of(doc(SAFETY), 59.9, 30.0) == "train"
+    assert views.split_of(doc(SAFETY), 120.0, 89.0) == "test" and views.split_of(doc(SAFETY), 120.01, 30.0) == "train"
+    wrap = views.Region((330.0, 390.0), (-10.0, 89.0))  # a sector across +x
+    assert wrap.contains(350.0, 10.0) and wrap.contains(20.0, 10.0) and not wrap.contains(40.0, 10.0)
+
+
+@pytest.mark.parametrize("change", [
+    {"split": None},                                                           # a region without its split
+    {"heldOut": None},                                                         # a split without its region
+    {"split": "validation"},
+    {"heldOut": {"azimuthDeg": [60, 120]}},                                    # no elevation range
+    {"heldOut": {"azimuthDeg": [60, 120], "elevationDeg": [-10, 89], "distanceM": [1, 2]}},
+    {"heldOut": {"azimuthDeg": [60, 60], "elevationDeg": [-10, 89]}},          # empty
+    {"heldOut": {"azimuthDeg": [0, 400], "elevationDeg": [-10, 89]}},          # more than all round
+    {"heldOut": {"azimuthDeg": [0, 340], "elevationDeg": [-10, 89]}},          # a train spec left too little
+    {"moving": {"share": 0.3, "periodS": [8, 30]}},                            # a loop could cross the region's edge
+    {"slots": [{"width": 640, "height": 360, "fixed": {"position": [1.0, 0.5, 0.3], "lookAt": [0.2, 0, 0], "hfovDeg": 75}}]},
+    {"split": "test"},                                                         # a test spec drawing all round
+    {"split": "test", "azimuthDeg": [50, 110]},                                # partly outside the region
+    {"split": "test", "azimuthDeg": [65, 115], "elevationDeg": [8, 80], "heldOut": {"azimuthDeg": [60, 120], "elevationDeg": [10, 89]}},
+])
+def test_a_bad_held_out_region_is_refused(change):
+    d = doc(SAFETY)
+    for k, v in change.items():
+        if v is None:
+            d.pop(k)
+        else:
+            d[k] = v
+    with pytest.raises(views.ViewsError):
+        views.parse(d)
+
+
+def test_a_moving_share_of_zero_and_a_region_across_north_are_accepted(mixed):
+    d = doc(SAFETY)
+    d["moving"] = {"share": 0, "periodS": [8, 30]}
+    d["heldOut"] = {"azimuthDeg": [-20, 20], "elevationDeg": [-10, 89]}
+    s = views.parse(d)
+    vs = [views.draw(s, views.geometry(s, mixed), seed, 1)[0] for seed in range(1, 120)]
+    assert all(20.0 < v.azimuth < 340.0 and v.mode == "static" for v in vs)
+
+
+def test_the_offline_statistics_count_draws_rejections_and_the_region(capsys):
+    import views_stats
+    assert views_stats.main([SAFETY, "--takes", "60", "--region", HOLDOUT]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["views"] == 60 and out["modes"] == {"static": 60} and out["fallbacks"] == 0
+    assert out["heldOut"]["viewsInside"] == 0 and abs(out["heldOut"]["uniformShare"] - 1 / 6) < 1e-3
+    assert out["azimuthDeg"]["60-90"] == out["azimuthDeg"]["90-120"] == 0 and sum(out["azimuthDeg"].values()) == 60
+    assert out["rejected"]["candidates"] > 0 and sum(out["rejected"]["byRule"].values()) >= out["rejected"]["candidates"]
+    assert set(out["rejected"]["byRule"]) <= set(views.RULES) and out["attempts"]["median"] >= 1
+    assert views_stats.main([HOLDOUT, "--takes", "30"]) == 0
+    held = json.loads(capsys.readouterr().out)
+    assert held["heldOut"]["viewsInside"] == 30 and held["sha256"] == views.load(HOLDOUT).sha256

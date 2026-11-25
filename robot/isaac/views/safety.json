@@ -1,7 +1,7 @@
 {
  "format": "teleop-views",
  "version": 1,
- "notes": "Safety batches (docs/adr/0038 V, views in safety batches): one static view per twin, at a seeded random viewpoint each take. No moving views: the real cameras are mounted, and a counterfactual replay keeps its source's change, so it gets exactly its source's views. The same target, rules and records as recon.json.",
+ "notes": "Safety batches (docs/adr/0038 V, views in safety batches): one static view per twin, at a seeded random viewpoint each take. No moving views: the real cameras are mounted, and a counterfactual replay keeps its source's change, so it gets exactly its source's views. The same target, rules and records as recon.json. Training split: never a viewing direction in heldOut (azimuth 60-120 deg, the robot's left side, at every elevation), which safety-holdout.json keeps for test sessions.",
  "count": 1,
  "slots": [
   {"width": 640, "height": 360, "hfovDeg": [60, 90]}
@@ -24,5 +24,7 @@
  "room": {"floorClearanceM": 0.3, "ceilingM": 2.6, "radiusM": 2.2},
  "workspace": {"min": [0.12, -0.32], "max": [0.48, 0.32], "grid": 5, "heightM": 0.005,
                "extra": [[0.05, 0.0, 0.15], [0.15, 0.0, 0.15], [0.25, 0.0, 0.08]]},
- "accept": {"inFrame": 0.8, "visible": 0.7, "cover": 0.12, "border": 0.02, "separationDeg": 15, "maxAttempts": 200}
+ "accept": {"inFrame": 0.8, "visible": 0.7, "cover": 0.12, "border": 0.02, "separationDeg": 15, "maxAttempts": 200},
+ "heldOut": {"azimuthDeg": [60, 120], "elevationDeg": [-10, 89]},
+ "split": "train"
 }

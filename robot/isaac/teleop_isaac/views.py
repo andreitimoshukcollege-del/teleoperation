@@ -15,6 +15,11 @@ where the spec puts it, every take the same unless the jitter moves it a little,
 rules are still run on it, but only to warn: what it breaks is logged and recorded (``VW``'s ``broken``), and it is never
 moved. A spec may mix fixed and drawn slots; a drawn view keeps its separation from the fixed ones before it.
 
+A spec may declare a ``heldOut`` region of viewing directions (an azimuth and an elevation range) and its ``split``: a
+``train`` spec never draws a view whose azimuth and elevation fall in it, a ``test`` spec draws only there (its own ranges lie
+inside it), so test sessions are recorded from directions training never saw (docs/adr/0038 V, "Views in safety batches").
+:func:`split_of` tells which side of the region a recorded view is on.
+
 A candidate is drawn again until :func:`check` passes it: outside the robot's body and the arm's reach, not just above a
 surface, inside the room, the workspace in frame, unoccluded and big enough, and far enough in direction from the views drawn
 before it. A moving view must pass at every phase of its loop.
@@ -98,6 +103,17 @@ class Sphere:
 
 
 @dataclass(frozen=True)
+class Region:
+    """Viewing directions held out of training: a view's drawn azimuth (from +x toward +y, wrapping at 360) and elevation."""
+    azimuth: Tuple[float, float]
+    elevation: Tuple[float, float]
+
+    def contains(self, azimuth: float, elevation: float) -> bool:
+        a0, a1 = self.azimuth
+        return (azimuth - a0) % 360.0 <= a1 - a0 and self.elevation[0] <= elevation <= self.elevation[1]
+
+
+@dataclass(frozen=True)
 class Spec:
     count: int
     slots: Tuple[Slot, ...]
@@ -131,6 +147,8 @@ class Spec:
     separation: float
     max_attempts: int
     doc: Mapping = field(default_factory=dict, compare=False)  # as read, for views.json and VS's sha256
+    held_out: Optional[Region] = None  # the viewing directions a train spec never draws and a test spec only draws
+    split: str = ""  # "train" or "test" with a held-out region, else ""
 
     def slot(self, k: int) -> Slot:
         return self.slots[k % len(self.slots)]
@@ -149,7 +167,10 @@ class Spec:
 
 MAX_COUNT = 8
 TOP_FIELDS = {"format", "version", "count", "slots", "target", "azimuthDeg", "elevationDeg", "distanceM", "rollDeg", "near",
-              "far", "record", "recordQuality", "moving", "keepOut", "room", "workspace", "accept", "notes"}
+              "far", "record", "recordQuality", "moving", "keepOut", "room", "workspace", "accept", "notes", "heldOut", "split"}
+SPLITS = ("train", "test")
+HELD_OUT_MAX_SHARE = 0.9  # a train spec may hold out at most this share of its azimuth-elevation box (its draws must end)
+REDRAW_MAX = 10000  # a train candidate's azimuth and elevation drawn again at most this often to fall outside the region
 
 
 def canonical(doc: Mapping) -> bytes:
@@ -267,10 +288,12 @@ def parse(doc) -> Spec:
     near, far = _num(d.get("near", 0.05), "near", 0.001, 1.0), _num(d.get("far", 6.0), "far", 1.0, 100.0)
     if far <= distance[1] + 1.0:
         raise ViewsError("views: far must reach past the farthest view distance by more than 1 m")
+    azimuth = _range(d.get("azimuthDeg", [0, 360]), "azimuthDeg", -360.0, 720.0)
+    elevation = _range(d.get("elevationDeg", [8, 80]), "elevationDeg", -10.0, 89.0)
+    held_out, split = _held_out(d, azimuth, elevation, slots, moving)
     return Spec(
         count=count, slots=tuple(slots), target_lo=t_lo, target_hi=t_hi,
-        azimuth=_range(d.get("azimuthDeg", [0, 360]), "azimuthDeg", -360.0, 720.0),
-        elevation=_range(d.get("elevationDeg", [8, 80]), "elevationDeg", -10.0, 89.0),
+        azimuth=azimuth, elevation=elevation,
         distance=distance, roll=_num(d.get("rollDeg", 0.0), "rollDeg", 0.0, 30.0), near=near, far=far,
         record=tuple(record), record_quality=_int(d.get("recordQuality", 92), "recordQuality", 1, 100), moving=moving,
         boxes=tuple(boxes), spheres=tuple(spheres),
@@ -287,7 +310,51 @@ def parse(doc) -> Spec:
         border=_num(a.get("border", 0.02), "accept.border", 0.0, 0.4),
         separation=_num(a.get("separationDeg", 15.0), "accept.separationDeg", 0.0, 90.0),
         max_attempts=_int(a.get("maxAttempts", 200), "accept.maxAttempts", 1, 10000),
-        doc=json.loads(json.dumps(d)))
+        doc=json.loads(json.dumps(d)), held_out=held_out, split=split)
+
+
+def _held_out(d: Mapping, azimuth: Tuple[float, float], elevation: Tuple[float, float], slots, moving) -> Tuple[Optional[Region], str]:
+    """The spec's held-out region and split, checked: both or neither; a test spec's ranges inside the region, a train spec's
+    not mostly in it; every view drawn (no fixed slot) and static (a moving loop could cross the region's edge)."""
+    if ("heldOut" in d) != ("split" in d):
+        raise ViewsError("views: heldOut and split come together")
+    if "heldOut" not in d:
+        return None, ""
+    if d["split"] not in SPLITS:
+        raise ViewsError(f"views: split must be one of {SPLITS}")
+    h = _obj(d["heldOut"], "heldOut", ("azimuthDeg", "elevationDeg"), ("azimuthDeg", "elevationDeg"))
+    region = Region(_range(h["azimuthDeg"], "heldOut.azimuthDeg", -360.0, 720.0),
+                    _range(h["elevationDeg"], "heldOut.elevationDeg", -10.0, 89.0))
+    if not 0.0 < region.azimuth[1] - region.azimuth[0] <= 360.0:
+        raise ViewsError("views: heldOut.azimuthDeg must span more than 0 and at most 360 degrees")
+    if any(sl.fixed is not None for sl in slots):
+        raise ViewsError("views: a spec with heldOut draws every view: no fixed slots")
+    if moving is not None and moving.share > 0:
+        raise ViewsError("views: a spec with heldOut has static views only (moving.share 0)")
+    if d["split"] == "test":
+        inside_az = (azimuth[0] - region.azimuth[0]) % 360.0 + (azimuth[1] - azimuth[0]) <= region.azimuth[1] - region.azimuth[0]
+        if not inside_az or not region.elevation[0] <= elevation[0] <= elevation[1] <= region.elevation[1]:
+            raise ViewsError("views: a test spec's azimuthDeg and elevationDeg must lie inside heldOut")
+    elif held_out_share(region, azimuth, elevation) > HELD_OUT_MAX_SHARE:
+        raise ViewsError(f"views: heldOut covers more than {HELD_OUT_MAX_SHARE:.0%} of the train spec's directions")
+    return region, d["split"]
+
+
+def held_out_share(region: Region, azimuth: Tuple[float, float], elevation: Tuple[float, float], steps: int = 720) -> float:
+    """The share of a uniform azimuth-elevation draw over these ranges that falls in the region (a midpoint grid)."""
+    az = sum(1 for i in range(steps) if region.contains(azimuth[0] + (azimuth[1] - azimuth[0]) * (i + 0.5) / steps, region.elevation[0]))
+    el = sum(1 for i in range(steps) if region.elevation[0] <= elevation[0] + (elevation[1] - elevation[0]) * (i + 0.5) / steps <= region.elevation[1])
+    return az / steps * el / steps
+
+
+def split_of(doc: Mapping, azimuth: float, elevation: float) -> str:
+    """Which side of its spec's held-out region a recorded view is on, for a dataset reader: ``doc`` is the spec as a take's
+    ``isaac/views.json`` holds it (its ``spec``), the angles are the view's ``VW`` draw ``azimuthDeg`` and ``elevationDeg``.
+    "test" inside the region, "train" outside it, "" for a spec without one."""
+    h = doc.get("heldOut")
+    if not h:
+        return ""
+    return "test" if Region(tuple(h["azimuthDeg"]), tuple(h["elevationDeg"])).contains(azimuth, elevation) else "train"
 
 
 def load(path: str = "", scene=None, count: int = -1) -> Optional[Spec]:
@@ -573,6 +640,14 @@ def _candidate(spec: Spec, k: int, r: random.Random, attempts: int, moving: bool
     target = tuple(round(r.uniform(a, b), 5) for a, b in zip(spec.target_lo, spec.target_hi))
     az = round(_u(r, spec.azimuth) % 360.0, 4)
     el = round(_u(r, spec.elevation), 4)
+    if spec.split == "train":  # never a held-out direction, not even in a fallback: drawn again until outside the region
+        for _ in range(REDRAW_MAX):
+            if not spec.held_out.contains(az, el):
+                break
+            az = round(_u(r, spec.azimuth) % 360.0, 4)
+            el = round(_u(r, spec.elevation), 4)
+        else:
+            raise ViewsError("views: no direction outside heldOut drawn")
     dist = round(_u(r, spec.distance), 5)
     roll = round(r.uniform(-spec.roll, spec.roll), 4)
     hfov = round(_u(r, slot.hfov), 4)
@@ -622,10 +697,11 @@ def fixed_view(spec: Spec, k: int, seed: int, change: int) -> View:
                 position=tuple(pos))
 
 
-def draw(spec: Spec, geo: Geometry, seed: int, change: int) -> List[View]:
+def draw(spec: Spec, geo: Geometry, seed: int, change: int, rejected: Optional[List[List[str]]] = None) -> List[View]:
     """Every view camera for one change, in index order, each from its own ``random.Random`` key: a pure function of the
     seed, the change and the camera's index (and the views before it, for the separation rule). Whether a view moves is
-    drawn first, from its own key, so the rules (which a moving loop breaks more often) do not change the share."""
+    drawn first, from its own key, so the rules (which a moving loop breaks more often) do not change the share.
+    ``rejected``, if given, gets the rules each rejected candidate broke (for the offline statistics, views_stats.py)."""
     out: List[View] = []
     for k in range(spec.count):
         if spec.slot(k).fixed is not None:  # placed by the spec: the rules only warn (VW's broken), it is never moved
@@ -643,6 +719,8 @@ def draw(spec: Spec, geo: Geometry, seed: int, change: int) -> List[View]:
             if not broken:
                 chosen = v
                 break
+            if rejected is not None:
+                rejected.append(broken)
             if best is None or len(broken) < len(best_broken):
                 best, best_broken = v, broken
         if chosen is None:

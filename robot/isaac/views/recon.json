@@ -1,0 +1,30 @@
+{
+ "format": "teleop-views",
+ "version": 1,
+ "count": 2,
+ "slots": [
+  {"width": 640, "height": 360, "hfovDeg": [60, 90]},
+  {"width": 640, "height": 360, "hfovDeg": [60, 90]}
+ ],
+ "target": {"min": [0.12, -0.30, -0.196], "max": [0.45, 0.30, 0.0]},
+ "azimuthDeg": [0, 360],
+ "elevationDeg": [8, 80],
+ "distanceM": [0.6, 2.0],
+ "rollDeg": 4,
+ "near": 0.05,
+ "far": 6.0,
+ "record": ["rgb", "depth", "mask"],
+ "recordQuality": 92,
+ "moving": {"share": 0.3, "periodS": [8, 30], "azimuthAmpDeg": [10, 45], "elevationAmpDeg": [0, 10], "distanceAmpM": [0, 0.2],
+            "targetAmpM": [0, 0.05]},
+ "keepOut": {
+  "boxes": [{"id": "body", "min": [-0.21, -0.13, -0.20], "max": [0.14, 0.13, 0.09], "marginM": 0.05}],
+  "spheres": [{"id": "arm", "center": [0.0, 0.0, 0.035], "radius": 0.55}],
+  "surfaceMarginM": 0.10,
+  "aboveSurfacesM": 0.75
+ },
+ "room": {"floorClearanceM": 0.3, "ceilingM": 2.6, "radiusM": 2.2},
+ "workspace": {"min": [0.12, -0.32], "max": [0.48, 0.32], "grid": 5, "heightM": 0.005,
+               "extra": [[0.05, 0.0, 0.15], [0.15, 0.0, 0.15], [0.25, 0.0, 0.08]]},
+ "accept": {"inFrame": 0.8, "visible": 0.7, "cover": 0.12, "border": 0.02, "separationDeg": 15, "maxAttempts": 200}
+}

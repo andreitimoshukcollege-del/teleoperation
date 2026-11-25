@@ -44,6 +44,7 @@ from . import materials as materials_module
 from . import camfeed, camwire, kinematics, wire
 from . import profile as profile_module
 from . import scene as scene_module
+from . import views as views_module
 
 APERTURE_MM = 20.955  # horizontal aperture; the focal length follows from the field of view
 # A mount link's frame looks along +x with z up; a USD camera looks along its -z with +y up.
@@ -897,7 +898,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     # every object that exists then out of later collections. Each 5 s report says how often the collector ran and its longest.
     a.add_argument("--gc-freeze", action=argparse.BooleanOptionalAction, default=True,
                    help="freeze Python's heap once the scene is built, so later garbage collections never walk it (default on)")
+    # View cameras at random viewpoints, for scene reconstruction (docs/adr/0038 "V, views"): opt-in. Without --views (and
+    # without a views section in the scene file) the renderer records exactly as before.
+    a.add_argument("--views", default="", help="a views spec (robot/isaac/views/recon.json): extra cameras placed at seeded random "
+                                                "viewpoints at every change; default: the scene file's views section, if any")
+    a.add_argument("--views-count", type=int, default=-1, help="how many view cameras (-1: the spec's; 0: none)")
     args = a.parse_args(argv)
+    if not -1 <= args.views_count <= 8:
+        a.error("--views-count must be in [-1, 8]")
     if args.subframes < 1:
         a.error("--subframes must be at least 1")
     if args.samples_per_pixel < 1:

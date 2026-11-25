@@ -2119,3 +2119,41 @@ one frame earlier and one frame later.
 3. **What to look at:** the contact sheet. The cameras sit all round the table at varied heights and distances, the table and
    arm fill a good part of each frame, and none sits inside or right against the robot, the table or an object. Moving
    views pan smoothly in the videos.
+
+**As built, 2026-11-25** (branch `work/recon-views`; nothing of it has run in Isaac yet):
+- **The code:**
+  - `robot/isaac/teleop_isaac/views.py`, with the specs `robot/isaac/views/recon.json` and `recon-720.json`;
+  - `renderer.py`, behind `--views`/`--views-count`;
+  - `just isaac-jetrover-host ... views=<spec> views_count=<n>`;
+  - the records in trainer/contract/SESSION_FORMAT.md;
+  - `robot/isaac/views_check.py`.
+- **Already twin-side.** The JetRover twin's scene cameras are three (`third-left`, `third-right`, `wrist`); four is the FR3's.
+  Neither changes.
+- **Readers.**
+  - `teleop_lerobot.takes` now keeps only the `CM` cameras' parts in an episode frame. It used to keep every rgb part of a
+    `VF`, which a view's would have joined. It was harmless, since the writer reads only `take.cameras`, but the parts are
+    now exactly the episode's. Before views, every rgb part had a `CM` camera, so no dataset changes.
+  - `robot/lerobot/tests/test_views_ignored.py` builds the same take with and without two views (`VS`, `VW`, `VP` and nine
+    view streams). Both give the same cameras, frames, states, actions, timings and JPEGs, the same camera sidecar entries
+    and the same visibility cameras.
+- **Draws, measured offline** (the shipped spec on `jetrover-mixed`, 300 seeds, 600 views):
+  - 402 static and 198 moving (33%);
+  - candidates drawn until one passed: median 2 and p99 9 for a static view, median 5 and p99 25 for a moving one; at most
+    26 of the 200 allowed;
+  - no fallback;
+  - about 20 ms of Python a view, once a take, between takes;
+  - every 45° of azimuth is used, behind the robot least (9 of 200 views in 180-225°, against 47 in 315-360°), which is
+    the robot's body and arm sphere at work.
+  - The fastest a moving view's camera travels: a few mm a frame (3 mm at its fastest for a 1.37 m view in the tests).
+- **Tests.** `robot/isaac/tests/test_views.py` (38 cases) and `test_views_check.py` (5: a take ray-cast here passes, a moving
+  view rendered one frame off its `VP` is caught, a missing `VP` or a `VW` that is not the draw fails, a take without views
+  fails, the sheet is written).
+  - `scripts/gpu/gate.sh isaac lerobot` on de151a3: isaac 314 passed and 8 skipped (the pxr cases); lerobot 143 passed.
+  - No C# changed, so the core and bridge gates were not run.
+- **Not checked yet (the twin check above):**
+  - the frame rate, at any view count;
+  - that Isaac takes a new focal length per take on an `RtxCamera` prim (`UsdGeom.Camera.focalLength`), and a 1280×720
+    `CameraSensor` beside the 640×360 ones;
+  - the moving views' frame association (lag − 1) on real renders;
+  - the encode pool keeping up;
+  - the views' masks and exposure.

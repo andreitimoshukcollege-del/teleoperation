@@ -986,6 +986,81 @@ of aims against free moves are `move_features.py`'s logistic regression on the r
   later and lower than planned), RobotHost's backstop refusing an accident's path into the table or the arm itself, and whether the twin's
   contacts follow the model's third.
 
+**Accidents that cause contacts, and contacts at more heights (2026-11-24, branch `work/v2-motion7`).** World-models' review of the pilot
+`jetrover_20261124_201301_cc0719` (8 groups, 23 takes): only 3 of 21 contact-making moves were accidents, and the gripper met objects at a
+median 12 cm below the base frame (80% from -15 to -6 cm).
+
+- **What the twin did** (`joint-drive --dry-run --scene <file> --audit-take <take>...`, `TakeAudit`: a recorded take's `MV`, `JC`, `FR`,
+  `WO`, `WZ` and `WC` read back against the collision model):
+  - the measured joints trail the command by 0.18 s (p50 over the 23 takes; p90 0.20);
+  - of 71 accident records, the command came within 2 cm of an object by the model in 30, into one in 20, and into one for 0.2 s or longer
+    in 16; a physics contact began in 15 spans (onset to recorded end, plus 0.2 s). Agreement with physics, per accident: the command in an
+    object 13 both / 7 only the model / 2 only physics / 49 neither; in one for the lag, or the follower below, 13 / 3 / 2 / 53; the measured
+    arm 14 / 3 / 1 / 53. RobotHost clamped commands in 18 spans (paths into the table or the arm itself: the clamp ignores objects);
+  - of the 75 physics contact onsets 25 began in an accident's span (33%), 7 of the 23 in the source takes; the source takes' contact-making
+    moves were 14, accidents among them 3 (4 counting the 0.2 s after a span: a slip's contact came 0.05 s after its recorded end);
+  - **why so few:** most accidents never came near an object (the commanded closest p50 27 mm, 9 of the sources' 25 beyond 4 cm), and those
+    that went in briefly did not reach physics: a wrong way into an object for 0.03-0.05 s was 6 times in the command and never in physics.
+    The pilot is small: by the dry run's lag-aware count below (22% of accidents with a contact, 37% of the contact-making moves) 5.5 of
+    the sources' 25 accidents were due a contact, and 4 had one. Speeds capped at 3.84 rad/s and the 2 cm quiet guard cost little (the
+    guard keeps 42 + 22 of 567 accidents in free space). The replays' adds bring contacts of their own, none from accidents.
+- **The follower:** the dry run counts contacts as the twin's arm makes them, on the command 0.10 s late, followed with a time constant of
+  0.08 s at most 3.7 rad/s a joint (fitted to the pilot's measured joints, rms largest-joint error p50 0.029 rad; `--follow` sets it for the
+  audit). A contact belongs to an accident when it begins in its span or 0.2 s after (`MixedDryRun.LagSeconds`).
+- **Aimed accidents** (`MixedOptions.AimAccidents`, `--no-accident-aim`). A jerk, an overshoot, a slip or a rush placed near an object now
+  stops its kind's own distance (jerk 5-12 cm, overshoot 3-10, slip 2-6, rush 3-10) less a depth of 1-3 cm short of where the model first
+  meets the object on the line in toward it, and the accident carries the hand on that far, into the object (`HumanOperator.AccidentReach`).
+  Every accident then holds 0.2-0.4 s before the recovery (`AccidentModel.ReactionLow`), aimed or not, and a jerk's onset is drawn over
+  0.3-0.95 of its part: holding is no sign of a contact. A wrong way is drawn as before. Placed near objects in 0.6 of the main part's
+  would-be blind parts (0.4 before). Of the aimed kinds, 77 of 97 placed accidents reached an object on the follower (current scene, 79%;
+  drawn as before 72 of 130, 55%). With the option off and the old shares, bands and no link aims, the plans are the old ones row for row.
+- **Heights.** The blind goals' tool bands are five (`--tool-bands`): -18 to -13 cm (30%), -13 to -8 (25%), -8 to -3 (20%), -3 to +2 (15%),
+  +2 to +8 (10%). Aims, passes and placed accidents draw their height from the same bands within what the object offers, and objects by how
+  much of them they offer (`SharedHeights`, `--no-shared-heights`). **Link aims** (`LinkAimShare` 0.2, `--link-aims`): an object reaching
+  above -8 cm met first by the wrist or the elbow's links (a pose whose link passes 1.2-4 cm from a point near its top or a plank's
+  underside, approached by a turn round the base or a lift at the shoulder from as far back as an aim starts). The JetRover's links are
+  13 cm from a shoulder 3.5 cm above the base frame, so the upper arm meets only what stands within about 15 cm of the axis and the forearm
+  within about 25 cm: the scene's bars, 16-30 cm out, are met by the wrist and the pads, the forearm seldom. Link aims at 0.4 raised the
+  aim-against-free AUC in the main part (0.719) for a few more wrist contacts.
+- **Replays:** `ReplayAdd`'s spots (an add, a move) are checked with `OverlapsAtHeights`, each object at its own height, so an overhead bar's
+  footprint no longer blocks what stands under it (asked in the round-7 integration).
+
+On layouts 1-200 (seed 1, 3.8 rad/s, 15 s; Release, on the GPU machine). "Before" is the planner at 7dd0356 (measured by the dry run of
+88df7d2, and on the scene of `work/v2-scene7` at 328f600 by this branch with `--no-accident-aim --no-shared-heights --link-aims 0
+--accidents 0.12,0.4 --tool-bands` the old three, which plans exactly as 7dd0356); "after" is 1e6640f. Contacts are lag-aware unless said.
+
+| | Before, current scene | After, current scene | Before, with bars | After, with bars |
+|---|---|---|---|---|
+| Layouts planned | 194 | 198 | 191 | 193 |
+| Accidents (a take) | 567 (2.9) | 701 (3.5) | 515 (2.7) | 658 (3.4) |
+| Contact onsets / in an accident's span | 410 / 169 (41%) | 447 / 209 (47%) | 350 / 116 (33%) | 334 / 137 (41%) |
+| Contact-making records / accidents among them | 328 / 122 (37%) | 336 / 144 (43%) | 282 / 81 (29%) | 274 / 102 (37%) |
+| Accidents farther than 10 cm from every object | 225 (40%) | 310 (44%) | 235 (46%) | 295 (45%) |
+| "An accident" for "a contact", AUC (by the commanded model) | 0.630 (0.585) | 0.641 (0.622) | 0.589 (0.564) | 0.614 (n/a) |
+| Tool point at contact, 5 cm bins from -20 cm | 42 149 97 88 22 11 1 0 | 44 141 138 88 32 4 0 0 | 19 80 93 89 39 18 12 0 | 38 68 94 69 41 15 8 1 |
+| Largest 5 cm band, tool point / touching link's contact point | 36% / 28% | 32% / 28% | 27% / 25% | 28% / 25% |
+| Touching link: gripper, wrist, distal | 83%, 17%, 0 | 81%, 18%, 1% | 79%, 21%, 0 | 73%, 26%, 1% |
+| Aim against free, logistic AUC, whole / main part | 0.660 / 0.677 | 0.696 / 0.727 | 0.644 / 0.677 | 0.670 / 0.710 |
+| Largest arm-joint step a frame, p50 / p90 / p95 / p99 rad | 0.031 / 0.112 / 0.143 / 0.202 | 0.028 / 0.114 / 0.146 / 0.205 | 0.031 / 0.113 / 0.143 / 0.200 | 0.030 / 0.116 / 0.149 / 0.208 |
+| The command moving | 83% of frames | 80% | 83% | 81% |
+| Planned contacts (aims and passes) | 112 in 85 takes | 98 in 76 | 113 in 81 | 130 in 92 |
+
+- **The accident share:** on the dry run a third to four in ten of the contacts now come from accidents on the scene with bars, the
+  scene the next batches run (37% of contact-making records, 41% of onsets), against 29% and 33%. The twin should land near a third with
+  the replays' adds counted; on the current scene the dry run already had 37% before, and has 43%.
+- **The cost:** "an accident" predicts a contact a little better (0.614 against 0.589 with bars), and aims are told from free moves a
+  little better in the main part (0.710 against 0.677): more of the main part's free moves are placed accidents' moves, and on the current
+  scene, whose objects are mostly low, the blind goals now reach higher than aims can (0.727). The per-frame motion is as before.
+- **Heights:** with bars no 5 cm band holds more than 28% of the contacts by the tool point (25% by the contact point), and the wrist meets a
+  quarter of them. The forearm and upper arm stay rare (above).
+- **Checked:** `AimedAccidentTests` (aimed accidents reach their object on the follower, 12 of 14 in 24 layouts; accidents 10 cm from every
+  object stay; the options; link aims met first by the wrist or the elbow's links; blind goals over at least four of the five bands; the take
+  audit on a written take); `MixedTakeTests` (the one-law test over 20 bench layouts: few blind goals end low on the crowded bench now).
+  The four old scripts' tests unchanged.
+- **Not run on the twin.** The twin check: a batch on this branch with the bars' scene, then `--audit-take` over its takes: the share of
+  physics contacts begun in an accident's span and 0.2 s after (about a third over all takes, more in the sources), the aimed accidents'
+  physics contacts (the record `free` with `MV` accident on it near an object), the agreement table above, and `WC` by link and height.
+
 ### C, clearance and contacts
 
 Built 2026-11-22 on `work/v2-contacts`. Checked offline against recorded takes; the table contacts are not yet run on the twin.

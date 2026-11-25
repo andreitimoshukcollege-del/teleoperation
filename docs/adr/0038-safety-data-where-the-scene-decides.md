@@ -1082,6 +1082,12 @@ still `cmp` equal).
   same distance on the object's other side (through a movable object or beside a fixture as before, only mirrored). Aims plan exactly
   as before: one pitch, the same line, no new draws. The planning report counts the passes' own tries and misses. The test is unchanged:
   its assumption, passes among the object moves (the bar above), is the design's.
+  With it the test plans 61 aims and 4 passes on its 24 layouts.
+- **A second test, whose sample was too small.** After the fix `AimsAndPassesMoveAsFreeMovesDo_AndEveryKindFollowsOneLawAfterIt` found
+  1 of 56 blind goals ending below 8 cm above the table on its 20 bench layouts, against its bar of 2 (4 of 73 at e07ef1b). The share did
+  not fall: over the bench's layouts 1-200, 46 of 650 blind goals (7.1%) ended below -10 cm from the base frame at e07ef1b and 57 of 619
+  (9.2%) after the fix. 20 layouts hold about three such ends, so the bar sat on the draws. The test now runs 40 layouts with the same bar
+  (6 of 119 end low, 102 high).
 - **Measured** (layouts 1-200, seed 1, 3.8 rad/s, 15 s, Release on the GPU machine; lag-aware contacts on the follower). "Merged" is
   e07ef1b, which reproduces the motion section's "after, with bars" column row for row; "fixed" is 87f0d90.
 

@@ -2437,6 +2437,7 @@ and for depth and masks in the datasets they read. Both are `safety-build` optio
   - `safety-views-check`: the table's points cast through each sampled pixel of the room cameras and the views (moving ones at
     each frame's pose) had the table's id at 99.81-99.95% of the 38-78 thousand pixels per camera whose depth put them on its
     plane, none seen through, and the arm's link boxes (from `VQ`) landed on its ids at 94.9-97.0% of 397-408 unoccluded centres;
+    take 185 alone (two static views): table 99.85-99.97%, none seen through, arm 90.2-98.5% of 204 (1.47 MB an episode);
   - cost: the build took 50 s against 36 s without (two episodes, two workers); the depth and masks about 3 s an episode of
     decoding, in the workers; the views' videos 10.2 MB against third-left's 15.0 MB.
 - **Tests** (`robot/lerobot/tests/test_views_dataset.py`, 9 cases, on a synthetic take whose depth and masks are the table

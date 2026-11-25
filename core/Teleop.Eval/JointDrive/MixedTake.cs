@@ -395,6 +395,9 @@ namespace Teleop.Eval.JointDrive
         private readonly int[] _objectMisses = new int[7];
 
         private int _objectTries, _objectMoves;
+        private readonly int[] _passMisses = new int[7]; // the same, of the passes alone (docs/adr/0038 "M, motion", round 7)
+        private int _passTries, _passMoves, _passesTurnedAims;
+        private bool _tryingPass;
         private readonly int[] _lineBreaks = new int[6]; // diagnostics: no seed, then a walk's break: IK, envelope, model, branch flip, over the base
         private readonly Dictionary<int, int> _missesInARow = new Dictionary<int, int>();
 
@@ -403,7 +406,8 @@ namespace Teleop.Eval.JointDrive
         {
             string counts = FormattableString.Invariant(
                 $"object moves {_objectMoves} of {_objectTries} tried (missed: too low {_objectMisses[0]}, no line {_objectMisses[1]}, no end {_objectMisses[2]}, no start {_objectMisses[3]}, move there {_objectMisses[4]}, approach {_objectMisses[5]}, sweep {_objectMisses[6]}; ") +
-                FormattableString.Invariant($"lines: no seed {_lineBreaks[0]}, walks broken by IK {_lineBreaks[1]}, envelope {_lineBreaks[2]}, model {_lineBreaks[3]}, flip {_lineBreaks[4]}, base {_lineBreaks[5]})");
+                FormattableString.Invariant($"lines: no seed {_lineBreaks[0]}, walks broken by IK {_lineBreaks[1]}, envelope {_lineBreaks[2]}, model {_lineBreaks[3]}, flip {_lineBreaks[4]}, base {_lineBreaks[5]}); ") +
+                FormattableString.Invariant($"passes {_passMoves} of {_passTries} tried ({_passesTurnedAims} more made aims beside the robot; missed: no line {_passMisses[1]}, start {_passMisses[6]}, move there {_passMisses[4]}, approach {_passMisses[5]})");
             var objects = new List<string>();
             foreach (KeyValuePair<int, int> kv in _missesInARow)
             {
@@ -455,6 +459,7 @@ namespace Teleop.Eval.JointDrive
         private bool Miss(int why)
         {
             _objectMisses[why]++;
+            if (_tryingPass) _passMisses[why]++;
             return false;
         }
 
@@ -1438,6 +1443,7 @@ namespace Teleop.Eval.JointDrive
         private bool TryObjectMove(int oi, ScriptMoveKind kind, ScriptMoveKind? accident = null)
         {
             _objectTries++;
+            _tryingPass = false;
             SafetyObject o = _objects[oi];
             const double deg = Math.PI / 180.0;
             float bearing = MathF.Atan2(o.Center.Y, o.Center.X);
@@ -1462,7 +1468,14 @@ namespace Teleop.Eval.JointDrive
             // 2026-11-23 over the IK: nothing at 100), so an arc comes from the front; a pass would have to go on past the object,
             // so beyond 80 degrees it is an aim.
             if (MathF.Abs(bearing) > 60f * MathF.PI / 180f) side = MathF.Sign(bearing);
-            if (kind == ScriptMoveKind.Pass && MathF.Abs(bearing) > 80f * MathF.PI / 180f) kind = ScriptMoveKind.Aim;
+            if (kind == ScriptMoveKind.Pass && MathF.Abs(bearing) > 80f * MathF.PI / 180f)
+            {
+                kind = ScriptMoveKind.Aim;
+                _passesTurnedAims++;
+            }
+
+            _tryingPass = kind == ScriptMoveKind.Pass;
+            if (_tryingPass) _passTries++;
             if (kind == ScriptMoveKind.Pass || !Draw.Chance(ref _rng, RadialShare))
             {
                 float rLine;
@@ -1642,6 +1655,7 @@ namespace Teleop.Eval.JointDrive
             }
 
             _objectMoves++;
+            if (_tryingPass) _passMoves++;
             int baseMove = Add(kind, oi, offset, s, e, approach, MovePart.Approach);
             bool pushed = false;
             if (withAccident)
@@ -1676,6 +1690,7 @@ namespace Teleop.Eval.JointDrive
             {
                 Undo(before, drafts);
                 _objectMoves--;
+                if (_tryingPass) _passMoves--;
                 return Miss(5);
             }
 

@@ -523,7 +523,7 @@ namespace Teleop.Eval.JointDrive
         /// twin): the measured joints' mean less the follower's over the views pilot's 46 takes, the shoulder and elbow below it, so the tool
         /// point hangs about 9 mm lower (p50). Added to every followed pose.
         /// </summary>
-        internal static readonly double[] FollowSag = { 0, 0, 0, 0, 0 };
+        internal static readonly double[] FollowSag = { 0, -0.019, -0.0135, -0.0045, 0 };
 
         /// <summary>A followed pose with <see cref="FollowSag"/> added.</summary>
         internal static ArmPose Sagged(float yaw, float proximal, float distal, float wrist, float roll) =>

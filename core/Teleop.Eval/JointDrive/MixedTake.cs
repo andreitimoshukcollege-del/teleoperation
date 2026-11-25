@@ -152,10 +152,10 @@ namespace Teleop.Eval.JointDrive
         /// On top of <see cref="AccidentShare"/>, the share of the main part's would-be layout-blind parts that are a move to a point near an object (a few cm off
         /// its surface, at a height it stands over) with an accident in it (drawn from the accidents' own generator too; when none plans, a
         /// layout-blind part carries it): accidents placed near objects, so about a third of the contacts come from accidents (docs/adr/0038
-        /// "M, motion"). Recorded as a <c>free</c> move with its accident. 0.6 since the 2026-11-24 review (0.4 before): on the twin, replays'
-        /// adds bring contacts of their own, none from accidents.
+        /// "M, motion"). Recorded as a <c>free</c> move with its accident. 0.8 since round 7's twin check (0.6 from the 2026-11-24 review, 0.4
+        /// before): with <see cref="SpendTouched"/> the objects already knocked over are no longer targets, and fewer parts find one.
         /// </summary>
-        public double AccidentNearShare { get; set; } = 0.6;
+        public double AccidentNearShare { get; set; } = 0.8;
 
         /// <summary>
         /// Whether the accidents placed near objects are aimed at them (docs/adr/0038 "M, motion", the 2026-11-24 review): a jerk, an overshoot, a

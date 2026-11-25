@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Numerics;
+using Teleop.Core.Types;
 using Teleop.RobotArm.Collision;
 using Teleop.RobotArm.Types;
 using Teleop.RobotArm.Wire;
@@ -668,6 +669,41 @@ namespace Teleop.Eval.JointDrive
             public int Like, AccidentLike; // and physics-like: a tippy movable object gone after its first contact event
             public readonly List<double> LikeTool = new List<double>();
             public readonly Dictionary<string, int[]> LikeByKind = new Dictionary<string, int[]>();
+            public readonly List<(int Accidents, List<double> Tool)> LikeTakes = new List<(int, List<double>)>(); // each take's physics-like events
+
+            /// <summary>
+            /// What a twin pilot of <paramref name="takes"/> source takes would show (docs/adr/0038 "M, motion", round 7 on the twin): takes drawn
+            /// with replacement from the dry run's, 2000 times (seeded): the physics-like accident share's p10 / p50 / p90, and how often the
+            /// largest 5 cm band of the tool point holds more than 40%.
+            /// </summary>
+            public string Pilot(int takes)
+            {
+                if (LikeTakes.Count == 0) return "none";
+                var rng = new SeededRng(0x5EED_0007UL + (ulong)takes);
+                var shares = new List<double>();
+                int over = 0;
+                for (int b = 0; b < 2000; b++)
+                {
+                    int acc = 0;
+                    var bins = new int[64];
+                    int n = 0;
+                    for (int k = 0; k < takes; k++)
+                    {
+                        (int a, List<double> zs) = LikeTakes[(int)(rng.NextDouble() * LikeTakes.Count) % LikeTakes.Count];
+                        acc += a;
+                        foreach (double z in zs) bins[Math.Clamp((int)Math.Floor((z * 100.0 + 20.0) / 5.0), 0, 63)]++;
+                        n += zs.Count;
+                    }
+
+                    if (n == 0) continue;
+                    shares.Add(acc / (double)n);
+                    if (bins.Max() > 0.4 * n) over++;
+                }
+
+                shares.Sort();
+                string P(double q) => (100 * shares[Math.Min(shares.Count - 1, (int)Math.Round(q * (shares.Count - 1)))]).ToString("0", CultureInfo.InvariantCulture);
+                return FormattableString.Invariant($"{takes} source takes: accident share p10 {P(0.1)}%, p50 {P(0.5)}%, p90 {P(0.9)}%; a band over 40% in {100.0 * over / Math.Max(1, shares.Count):0}%");
+            }
             public readonly List<double> EventTool = new List<double>();
             public readonly Dictionary<string, int[]> EventsByKind = new Dictionary<string, int[]>(); // accident kind: events begun in its spans
             public readonly Dictionary<string, int[]> PlacedByKind = new Dictionary<string, int[]>();
@@ -694,6 +730,7 @@ namespace Teleop.Eval.JointDrive
                     $"    physics-like (the events, a tippy movable object knocked over at its first and lying after): {Like}, in an accident's span {AccidentLike} ({100.0 * AccidentLike / Math.Max(1, Like):0}%); tool point 5 cm bins from -20: ") +
                     Histogram(LikeTool.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(LikeTool) + "); " + Spread(LikeTool) + "; by accident kind: " +
                     string.Join(", ", LikeByKind.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => $"{k.Key} {k.Value[0]}")));
+                Console.WriteLine("    a twin pilot's spread, physics-like (takes resampled): " + Pilot(8) + "; " + Pilot(20) + "; " + Pilot(60));
                 Console.WriteLine("    contact point cm, 5 cm bins from -20: " + Histogram(Point.Select(z => z * 100.0), -20, 5, 8) + " (largest band " + Largest(Point) + ")");
                 Console.WriteLine("    touching link: " + Kinds(Links) + "; contact point by link, p50 cm: " +
                                   string.Join(", ", PointByLink.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => k.Key + " " + (k.Value.OrderBy(x => x).ElementAt(k.Value.Count / 2) * 100).ToString("0.0", CultureInfo.InvariantCulture))));
@@ -829,6 +866,8 @@ namespace Teleop.Eval.JointDrive
             int onsets = 0;
             var events = new ContactEvents();
             var like = new PhysicsLike(objects);
+            int takeLikeAccidents = 0;
+            var takeLikeTool = new List<double>();
             foreach (TrackPoint p in track)
             {
                 arm.At(p.Pose, p.Gripper);
@@ -842,10 +881,12 @@ namespace Teleop.Eval.JointDrive
                         double tl = plan.ScriptStart + p.At;
                         tally.Like++;
                         tally.LikeTool.Add(arm.Tool.Z);
+                        takeLikeTool.Add(arm.Tool.Z);
                         for (int k = 0; k < moves.Count; k++)
                         {
                             if (!ScriptMoveCodec.IsAccident(moves[k].Kind) || tl < moves[k].Start || tl > moves[k].End + LagSeconds) continue;
                             tally.AccidentLike++;
+                            takeLikeAccidents++;
                             string kn = ScriptMoveCodec.Name(moves[k].Kind) + (moves[k].Part == MovePart.NearAccident ? " placed" : "");
                             if (!tally.LikeByKind.TryGetValue(kn, out int[]? lk)) tally.LikeByKind[kn] = lk = new int[1];
                             lk[0]++;
@@ -896,6 +937,7 @@ namespace Teleop.Eval.JointDrive
                 }
             }
 
+            tally.LikeTakes.Add((takeLikeAccidents, takeLikeTool));
             tally.Planned++;
             tally.Onsets += onsets;
             if (onsets > 0) tally.Takes++;

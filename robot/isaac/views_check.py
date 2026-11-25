@@ -16,6 +16,11 @@ For each take:
    fits best (the lowest mean height error).
 4. **What the views see:** each view's share of pixels on the table, the arm (7, 8) and the objects (100+).
 
+Across the takes given, **each counterfactual replay must have exactly its source's views** (docs/adr/0038 V, views in safety
+batches). Takes are paired by ``robothost.jlog``'s ``RP`` (the group, the role); a replay's ``BK`` seed and change, its ``VS``
+and its ``VW`` records (pose, intrinsics, draw, gain) must equal its source's. A replay whose source is not among the takes
+is counted, not checked.
+
 ``--sheet`` writes a contact sheet: a row per take, a column per view, each the take's first recorded frame captioned with
 the view's mode, azimuth, elevation, distance and field of view.
 
@@ -195,6 +200,49 @@ def check_take(take, sheet):
     return out
 
 
+def view_records(take):
+    """(BK's seed and change, the last VS, the VW rows of that change) of a take, as recorded."""
+    rec = records(os.path.join(take, "isaac.jlog"))
+    if not rec.get("BK") or not rec.get("VS"):
+        return None
+    bk = rec["BK"][-1]
+    change = bk[1]
+    return (bk[2], change), rec["VS"][-1], [r for r in rec.get("VW", []) if r[0] == change]
+
+
+def replay_role(take):
+    """(group, role) from the take's RP record, or None for a take outside a replay group."""
+    path = os.path.join(take, "robothost.jlog")
+    if not os.path.exists(path):
+        return None
+    rp = records(path).get("RP")
+    return (rp[0][1], rp[0][2]) if rp and len(rp[0]) >= 3 else None
+
+
+def check_replays(takes):
+    """Every replay among ``takes`` against its source among them: the same BK seed and change, VS and VW rows."""
+    roles = {t: replay_role(t) for t in takes}
+    sources = {r[0]: t for t, r in roles.items() if r and r[1] == "source"}
+    out = {"pairs": 0, "identical": 0, "without_source": 0, "problems": []}
+    for t, r in roles.items():
+        if not r or r[1] != "replay":
+            continue
+        src = sources.get(r[0])
+        if src is None:
+            out["without_source"] += 1
+            continue
+        out["pairs"] += 1
+        a, b = view_records(src), view_records(t)
+        if a is None or b is None:
+            out["problems"].append(f"replay {os.path.basename(t)} or its source has no BK or VS")
+        elif a != b:
+            what = [n for n, x, y in zip(("BK seed and change", "VS", "VW"), a, b) if x != y]
+            out["problems"].append(f"replay {os.path.basename(t)} (group {r[0]}) does not have its source's views: {', '.join(what)} differ")
+        else:
+            out["identical"] += 1
+    return out
+
+
 def write_sheet(path, rows):
     import cv2
     import numpy as np
@@ -228,14 +276,16 @@ def main(argv=None) -> int:
         print(json.dumps(r, sort_keys=True))
     if args.sheet and sheet:
         write_sheet(args.sheet, sheet)
+    replays = check_replays(args.takes)
     depth = [v["depth_p99_mm"] for r in results for v in r["views"].values() if v.get("depth_p99_mm") is not None]
     modes = [v["mode"] for r in results for v in r["views"].values()]
     summary = {"takes": len(results), "with_problems": sum(1 for r in results if r["problems"]),
                "views": len(modes), "moving": modes.count("moving"),
                "depth_p99_mm_worst": max(depth) if depth else None,
-               "problems": [p for r in results for p in r["problems"]][:20]}
+               "replays": {k: replays[k] for k in ("pairs", "identical", "without_source")},
+               "problems": ([p for r in results for p in r["problems"]] + replays["problems"])[:20]}
     print("RESULT " + json.dumps(summary, sort_keys=True))
-    return 0 if results and not summary["with_problems"] else 1
+    return 0 if results and not summary["with_problems"] and not replays["problems"] else 1
 
 
 if __name__ == "__main__":

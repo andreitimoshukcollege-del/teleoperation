@@ -454,3 +454,113 @@ def test_a_fixed_slot_cannot_repeat_and_its_sight_covers_it():
     d["count"] = 1
     centre, reach = views.sight(views.parse(d))
     assert math.dist(centre, (3.0, 3.0, 1.0)) + 6.0 < reach
+
+
+# --- views in safety batches (docs/adr/0038 V, "Views in safety batches") ------------------------------------------------
+
+SAFETY = os.path.join(ROOT, "views", "safety.json")
+
+
+def _view_lines(spec, geo, seed, change, gain=1.0):
+    """The VS and VW records a session's preamble carries for this change, as the renderer writes them (view_records)."""
+    drawn = views.draw(spec, geo, seed, change)
+    rows = [("VS", *views.vs_fields(spec, seed, change))] + [("VW", *views.vw_fields(spec, v, change, gain)) for v in drawn]
+    return ["|".join(field(x) for x in row) for row in rows]
+
+
+def test_the_safety_spec_is_one_static_640x360_view_with_recons_rules():
+    s = views.load(SAFETY)
+    assert s.count == 1 and s.moving is None
+    assert [(v.width, v.height, v.hfov, v.fixed) for v in s.slots] == [(640, 360, (60.0, 90.0), None)]
+    a, b = doc(SAFETY), doc(RECON)
+    for k in ("target", "distanceM", "rollDeg", "near", "far", "record", "recordQuality", "keepOut", "room", "workspace", "accept"):
+        assert a[k] == b[k], k  # the same look-at box, rejection rules and records as the reconstruction spec
+
+
+def test_the_safety_spec_never_draws_a_moving_view_at_any_count(mixed):
+    s = views.load(SAFETY, count=3)
+    geo = views.geometry(s, mixed)
+    for seed in range(1, 121):
+        for v in views.draw(s, geo, seed, seed % 5):
+            assert v.mode == "static" and v.motion is None and v.attempts != views.FALLBACK
+            assert views.pose_at_frame(v, 0, 30) == views.pose_at_frame(v, 451, 30) == v.centre_pose()
+
+
+def test_a_replay_gets_exactly_its_source_takes_view_poses_and_intrinsics(mixed):
+    """A counterfactual replay keeps its source's change (renderer.keep_look: no change after the source closes), so its BK
+    has the source's seed and change, and its preamble's VS and VW are the same records: the draw is a pure function of the
+    spec, the scene, the seed, the change and the camera index. Shown here with a fresh spec, scene and geometry for the
+    replay, other changes drawn in between, and the gain the change metered (kept, since no change re-meters it)."""
+    s = views.load(SAFETY)
+    source = _view_lines(s, views.geometry(s, mixed), 812345, 17, 1.37)
+    other = views.load(SAFETY)  # read again, as nothing is shared between two sessions but the renderer's state
+    geo = views.geometry(other, scene_module.load(MIXED))
+    for change in (18, 3, 17, 40):
+        views.draw(other, geo, 812345, change)
+    replay = _view_lines(other, geo, 812345, 17, 1.37)
+    assert replay == source
+    r = views.parse_vw(replay[1].split("|")[1:])
+    v = views.draw(s, geo, 812345, 17)[0]
+    assert r["pose"] == tuple(round(c, 7) for c in (*v.centre_pose()[0], *v.centre_pose()[1]))
+    assert (r["fx"], r["fy"], r["cx"], r["cy"], r["width"], r["height"]) == \
+           (round(v.intrinsics["fx"], 6), round(v.intrinsics["fy"], 6), 320.0, 180.0, 640, 360)
+    # A take after a change (not a replay) gets other views: the replay's sameness comes from the kept change.
+    assert _view_lines(s, geo, 812345, 18, 1.37)[1:] != source[1:]
+
+
+def test_the_draw_is_the_same_in_another_process_whatever_its_hash_seed(mixed):
+    """views_check recomputes each take's draws offline, in another process: string seeds go through random.Random's sha512,
+    not hash(), so PYTHONHASHSEED cannot change them."""
+    import subprocess
+    import sys
+    s = views.load(SAFETY)
+    here = _view_lines(s, views.geometry(s, mixed), 4242, 6)
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); from teleop_isaac import views, scene; "
+            "from teleop_isaac.isaac_session import field; s = views.load(sys.argv[2]); "
+            "g = views.geometry(s, scene.load(sys.argv[3])); d = views.draw(s, g, 4242, 6); "
+            "rows = [('VS', *views.vs_fields(s, 4242, 6))] + [('VW', *views.vw_fields(s, v, 6, 1.0)) for v in d]; "
+            "print('\\n'.join('|'.join(field(x) for x in r) for r in rows))")
+    for hash_seed in ("1", "977"):
+        out = subprocess.run([sys.executable, "-c", code, ROOT, SAFETY, MIXED], capture_output=True, text=True, check=True,
+                             env=dict(os.environ, PYTHONHASHSEED=hash_seed)).stdout.split("\n")
+        assert out[:len(here)] == here
+
+
+def test_the_renderer_draws_and_meters_views_only_at_a_change_so_a_kept_look_keeps_them():
+    """The renderer's side of a replay's views, pinned on its source: views_now and view_change (the drawn views, their loop
+    start and gains) change only in apply_views and settle_room; both run only in _change_backdrop; and on_closed skips the
+    change while keep_look holds. So a replay's preamble repeats its source's VS and VW."""
+    import ast
+    with open(os.path.join(ROOT, "teleop_isaac", "renderer.py"), encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    parent = {}
+    for node in ast.walk(tree):
+        for child in ast.iter_child_nodes(node):
+            parent[child] = node
+
+    def owner(node):
+        while node in parent:
+            node = parent[node]
+            if isinstance(node, ast.FunctionDef):
+                return node.name
+        return None
+
+    calls = {}
+    writes = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in ("apply_views", "settle_room"):
+            calls.setdefault(node.func.id, []).append(owner(node))
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AugAssign) else []
+        for t in targets:
+            base = t.value if isinstance(t, ast.Subscript) else None
+            while isinstance(base, ast.Subscript):
+                base = base.value
+            if isinstance(base, ast.Name) and base.id in ("views_now", "view_change"):
+                writes.add(owner(node))
+    assert calls == {"apply_views": ["_change_backdrop"], "settle_room": ["_change_backdrop"]}
+    assert writes == {"apply_views", "settle_room"}
+    on_closed = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "on_closed")
+    first_if = next(n for n in on_closed.body if isinstance(n, ast.If))
+    assert "keep_look" in ast.unparse(first_if.test) and isinstance(first_if.body[-1], ast.Return)
+    appends = [n for n in ast.walk(on_closed) if isinstance(n, ast.Call) and ast.unparse(n.func) == "want_backdrop_change.append"]
+    assert len(appends) == 1 and appends[0].lineno > first_if.body[-1].lineno

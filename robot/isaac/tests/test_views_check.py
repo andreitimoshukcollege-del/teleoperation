@@ -119,3 +119,36 @@ def test_the_sheet_is_written(tmp_path):
     assert views_check.main([take, "--sheet", out]) == 0
     img = cv2.imread(out)
     assert img is not None and img.shape[1] == 640
+
+
+SAFETY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "views", "safety.json")
+
+
+def _records_only_take(root, name, group, role, seed, change, gain=1.0):
+    """A take with only what the replay check reads: RP in robothost.jlog; BK, VS and VW in isaac.jlog (safety.json)."""
+    take = os.path.join(root, name)
+    os.makedirs(take)
+    spec = views.load(SAFETY)
+    drawn = views.draw(spec, views.geometry(spec, scene_module.load(MIXED)), seed, change)
+    rows = [["BK", 1, change, seed, ""], ["VS", *views.vs_fields(spec, seed, change)]]
+    rows += [["VW", *views.vw_fields(spec, v, change, gain)] for v in drawn]
+    with open(os.path.join(take, "isaac.jlog"), "w", encoding="ascii") as f:
+        f.write("JSES|1|isaac|1000000000|CLOCK_MONOTONIC|test\n")
+        f.write("".join("|".join(field(x) for x in r) + "\n" for r in rows))
+    with open(os.path.join(take, "robothost.jlog"), "w", encoding="ascii") as f:
+        f.write(f"JSES|1|robothost|1000000000|CLOCK_MONOTONIC|test\nRP|5|{group}|{role}|{'none' if role == 'source' else 'remove:3'}\n")
+    return take
+
+
+def test_replays_with_their_sources_views_pass_and_one_after_a_change_is_caught(tmp_path):
+    root = str(tmp_path)
+    src = _records_only_take(root, "a-take1", 100001, "source", 77, 4, 1.21)
+    same = _records_only_take(root, "a-take2", 100001, "replay", 77, 4, 1.21)
+    r = views_check.check_replays([src, same])
+    assert (r["pairs"], r["identical"], r["problems"]) == (1, 1, [])
+    changed = _records_only_take(root, "a-take3", 100001, "replay", 77, 5, 1.21)  # the look was not kept: a new change
+    regained = _records_only_take(root, "a-take4", 100001, "replay", 77, 4, 0.9)  # re-metered
+    alone = _records_only_take(root, "b-take1", 200001, "replay", 78, 2)
+    r = views_check.check_replays([src, same, changed, regained, alone])
+    assert (r["pairs"], r["identical"], r["without_source"]) == (3, 1, 1)
+    assert len(r["problems"]) == 2 and "BK seed and change" in r["problems"][0] and "VW" in r["problems"][1]

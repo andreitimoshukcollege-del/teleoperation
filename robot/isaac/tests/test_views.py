@@ -344,3 +344,22 @@ def test_every_view_place_drawn_is_within_its_sight(spec, geo):
             for t in ([0.0] if v.motion is None else [v.motion.period * i / 12 for i in range(12)]):
                 p, _ = v.pose_at(t)
                 assert math.dist(p, centre) + spec.far <= reach
+
+
+def test_the_renderers_views_wiring_is_opt_in_and_records_what_it_drew():
+    """Everything the renderer does for views hangs off view_spec, which is None without --views or a section; the views get
+    no feed and stay out of CM and the mask check; their records come with the change and in each preamble; a moving view's
+    VP is the pose set lag - 1 frames before the frame was read."""
+    with open(os.path.join(ROOT, "teleop_isaac", "renderer.py"), encoding="utf-8") as f:
+        src = f.read()
+    run = src[src.index("def run("):]
+    assert "view_spec = views_module.load(args.views, scene, args.views_count)" in run
+    assert "if view_spec is not None:\n            apply_views(frame_now)" in run
+    assert "out.extend(view_records())" in run and "for record in view_records():" in run
+    assert "shown = max(0, frames - lag + 1 - view_change[\"frame\"])" in run and 'session_record("VP"' in run
+    assert 'streams += [f"view{k}.{st}"' in run and 'out["views.json"]' in run
+    assert "if look is not None or view_spec is not None" in run
+    # No feed for a view, and views are not among the CM cameras (specs) or the mask check's room cameras.
+    block = run[run.index("view_sensors = []"):run.index("app_utils.play(commit=True)")]
+    assert "CameraFeed" not in block and "specs.append" not in block
+    assert "encode_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix=\"encode\") if view_spec is not None else None" in run

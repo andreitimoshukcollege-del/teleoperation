@@ -365,6 +365,61 @@ def test_a_session_keeps_the_look_before_it_only_while_the_keep_file_is_there_an
     assert not keep_look(control, KEEP_LOOK_MAX)  # a file left behind: the look changes anyway
 
 
+def test_a_kept_look_is_released_between_sessions_once_its_keep_file_goes_and_never_while_a_session_is_open(tmp_path):
+    """LookGroup (docs/adr/0038 V, "A new view for every source take"): a replay group whose replays ended before the last
+    one recorded gets its change once the keep file goes, between sessions; never while a session is open or opening."""
+    from teleop_isaac.renderer import KEEP_LOOK_FILE, KEEP_LOOK_MAX, LookGroup, control_names_a_session
+    control, keep = tmp_path / ".active", tmp_path / KEEP_LOOK_FILE
+    looks, asked = LookGroup(str(control)), []
+    assert not looks.released(then=lambda: asked.append("r"))  # nothing kept: nothing to release
+    # Without the keep file, every closed session brings a change, as before.
+    looks.opened()
+    assert looks.closed(then=lambda: asked.append("c")) == "change" and asked == ["c"]
+    # A source take closes with the keep file there: kept, no change.
+    looks.opened()
+    keep.write_text("")
+    assert looks.closed(then=lambda: asked.append("c")) == "keep" and asked == ["c"] and looks.kept_in_a_row == 1
+    assert not looks.released(then=lambda: asked.append("r"))  # the file is still there: a replay may follow
+    # RobotHost opened the last replay (the control file names it) and the file went before the writer saw it: not released.
+    control.write_text(str(tmp_path / "take2"))
+    keep.unlink()
+    assert control_names_a_session(str(control))
+    assert not looks.released(then=lambda: asked.append("r"))
+    looks.opened()
+    control.unlink()
+    assert not control_names_a_session(str(control))
+    assert not looks.released(then=lambda: asked.append("r"))  # open in the writer until its close
+    assert looks.closed(then=lambda: asked.append("c")) == "change" and looks.kept_in_a_row == 0  # the last replay's close
+    assert not looks.released(then=lambda: asked.append("r"))
+    assert asked == ["c", "c"]
+    # A group whose replays end early: kept at its last recorded close, then the file goes with no session: released, once.
+    looks.opened()
+    keep.write_text("")
+    assert looks.closed() == "keep"
+    keep.unlink()
+    assert looks.released(then=lambda: asked.append("r")) and asked == ["c", "c", "r"] and looks.kept_in_a_row == 0
+    assert not looks.released(then=lambda: asked.append("r")) and asked == ["c", "c", "r"]
+    # The writer holding the lock (a session closing): the render loop does not wait, and asks again next frame.
+    looks.opened()
+    keep.write_text("")
+    looks.closed()
+    keep.unlink()
+    with looks._lock:
+        assert not looks.released()
+    assert looks.released()
+    # A keep file left behind still changes after KEEP_LOOK_MAX sessions in a row.
+    keep.write_text("")
+    outcomes = []
+    for _ in range(KEEP_LOOK_MAX + 1):
+        looks.opened()
+        outcomes.append(looks.closed())
+    assert outcomes == ["keep"] * KEEP_LOOK_MAX + ["forced"]
+    # Not recording: nothing is ever kept.
+    idle = LookGroup("")
+    idle.opened()
+    assert idle.closed() == "change" and not idle.released()
+
+
 # --- textures at their real size (docs/adr/0038 "A, appearance", 2026-11-23) ------------------------------------------
 
 def _sub(a, b):

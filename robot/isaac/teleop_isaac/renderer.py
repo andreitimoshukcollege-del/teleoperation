@@ -275,6 +275,74 @@ def keep_look(control_path: str, kept_in_a_row: int, max_kept: int = KEEP_LOOK_M
     return os.path.exists(os.path.join(os.path.dirname(os.path.abspath(control_path)), KEEP_LOOK_FILE)) and kept_in_a_row < max_kept
 
 
+def control_names_a_session(control_path: str) -> bool:
+    """Whether RobotHost's control file names a session (it writes the file when it opens one and removes it when it closes
+    it): one is open or opening, though the renderer's writer may not have seen it yet. Unreadable counts as yes."""
+    if not control_path:
+        return False
+    try:
+        with open(control_path, "r") as f:
+            return bool(f.read().strip())
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+class LookGroup:
+    """Which closed session brings the next change, so that a replay group (a source take and its replays) shares one change
+    and every group gets its own (docs/adr/0038 V, "A new view for every source take").
+
+    - :meth:`closed`, after each session's trailer: ``"keep"`` while :func:`keep_look` holds (a replay is to follow), else
+      ``"change"`` (``"forced"`` once :data:`KEEP_LOOK_MAX` sessions in a row kept one look).
+    - :meth:`released`, polled by the render loop between sessions: True, once, when a session closed under ``"keep"`` and
+      the keep file has gone since, with no session open or opening. That is a group whose replays ended before the last one
+      recorded (a replay refused, or failed before it started): the keep file goes when the replays end, but no session
+      closes after that, so before this the next source take opened with the group's look and views (the views pilot of
+      2026-11-25: 1-3 viewpoints a twin over a whole set). When the last replay does record, the file goes while it records,
+      and its own close brings the change, as before.
+
+    Thread-safe: the writer thread opens and closes sessions, the render loop asks :meth:`released`. ``then`` runs under the
+    lock, so a session that opens meanwhile finds the change pending (and its preamble waits for it)."""
+
+    def __init__(self, control_path: str, max_kept: int = KEEP_LOOK_MAX):
+        self.control_path = control_path
+        self.max_kept = max_kept
+        self.kept_in_a_row = 0  # sessions in a row that kept the look before them
+        self.open = False  # a session is open in the writer: from its preamble to its close
+        self._lock = threading.Lock()
+
+    def opened(self) -> None:
+        with self._lock:
+            self.open = True
+
+    def closed(self, then=None) -> str:
+        with self._lock:
+            self.open = False
+            if keep_look(self.control_path, self.kept_in_a_row, self.max_kept):
+                self.kept_in_a_row += 1
+                return "keep"
+            forced = self.kept_in_a_row >= self.max_kept
+            self.kept_in_a_row = 0
+            if then is not None:
+                then()
+            return "forced" if forced else "change"
+
+    def released(self, then=None) -> bool:
+        if not self.kept_in_a_row or not self._lock.acquire(blocking=False):  # cheap every frame; never waits on the writer
+            return False
+        try:
+            keep_file = keep_look(self.control_path, 0, 1)  # the file is there (whatever the count)
+            if self.open or not self.kept_in_a_row or keep_file or control_names_a_session(self.control_path):
+                return False
+            self.kept_in_a_row = 0
+            if then is not None:
+                then()
+            return True
+        finally:
+            self._lock.release()
+
+
 def camera_gain(brightness: float, target: float) -> float:
     """A camera's own exposure gain (linear light) that brings its mean brightness from ``brightness`` toward ``target``,
     within :data:`CAMERA_GAIN_RANGE`: its auto-exposure, locked for the session."""
@@ -1748,6 +1816,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             session.record(tag, *fields)
 
     def preamble():
+        looks.opened()  # first: no change is released between sessions while this one is open (LookGroup)
         # With an appearance section, a session that opens while a change is pending or under way (the one before closed in
         # the same poll of the control file) waits for it: its CM, LT, CJ and OA must be the change its frames show.
         if (look is not None or view_spec is not None) and not appearance_ready.wait(APPEARANCE_WAIT_S):
@@ -1812,23 +1881,24 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             out["views.json"] = views_module.views_json(view_spec, os.path.basename(args.views) if args.views else "scene file")
         return out
 
-    kept = {"in_a_row": 0}  # sessions in a row that kept the look before them (keep_look)
+    looks = LookGroup(args.record_control)  # which closed session brings the next change (a replay group shares one)
+
+    def change_due(why) -> None:
+        """The next change asked for (under looks' lock): with an appearance section or views, a session that opens before it
+        is done waits in its preamble."""
+        if look is not None or view_spec is not None:
+            appearance_ready.clear()
+        want_backdrop_change.append(why)
 
     def on_closed(directory) -> None:
         """After a session's trailer (the writer thread): the next change is due, unless the next session is to keep this
-        one's look (keep_look). With an appearance section, a session that opens before the change is done waits in its
-        preamble."""
-        if keep_look(args.record_control, kept["in_a_row"]):
-            kept["in_a_row"] += 1
+        one's look (keep_look, a replay to follow; LookGroup.released brings the change if none does)."""
+        outcome = looks.closed(then=lambda: change_due(directory))
+        if outcome == "keep":
             print(f"[render] the next session keeps this one's look (change {backdrop['change']}): {KEEP_LOOK_FILE} is there", flush=True)
-            return
-        if kept["in_a_row"] >= KEEP_LOOK_MAX:
+        elif outcome == "forced":
             print(f"[render] warning: {KEEP_LOOK_FILE} is still there after {KEEP_LOOK_MAX} sessions kept one look; changing anyway",
                   flush=True)
-        kept["in_a_row"] = 0
-        if look is not None or view_spec is not None:
-            appearance_ready.clear()
-        want_backdrop_change.append(directory)
 
     if args.record_control:
         if agree < 0.995 or not samples and args.lag < 0:
@@ -2094,6 +2164,11 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             f.poll()
         t_now = time.perf_counter()
         loop.add("tap", (t_now - t_frame) * 1e3)
+        if looks.kept_in_a_row and looks.released(then=lambda: change_due("released")):
+            # A replay group ended with its keep file gone and no session closing after it (its replays stopped early): the
+            # next source take gets a change of its own, its look and views included (docs/adr/0038 V).
+            print(f"[render] {KEEP_LOOK_FILE} is gone with no session open: the replay group's look (change {backdrop['change']}) "
+                  f"ends here; changing before the next take", flush=True)
         if want_backdrop_change:
             want_backdrop_change.clear()
             change_backdrop(frames)

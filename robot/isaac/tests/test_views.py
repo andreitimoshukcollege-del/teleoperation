@@ -529,8 +529,8 @@ def test_the_draw_is_the_same_in_another_process_whatever_its_hash_seed(mixed):
 
 def test_the_renderer_draws_and_meters_views_only_at_a_change_so_a_kept_look_keeps_them():
     """The renderer's side of a replay's views, pinned on its source: views_now and view_change (the drawn views, their loop
-    start and gains) change only in apply_views and settle_room; both run only in _change_backdrop; and on_closed skips the
-    change while keep_look holds. So a replay's preamble repeats its source's VS and VW."""
+    start and gains) change only in apply_views and settle_room; both run only in _change_backdrop; and a change is asked for
+    only through LookGroup, which skips it while keep_look holds. So a replay's preamble repeats its source's VS and VW."""
     import ast
     with open(os.path.join(ROOT, "teleop_isaac", "renderer.py"), encoding="utf-8") as f:
         tree = ast.parse(f.read())
@@ -560,11 +560,22 @@ def test_the_renderer_draws_and_meters_views_only_at_a_change_so_a_kept_look_kee
                 writes.add(owner(node))
     assert calls == {"apply_views": ["_change_backdrop"], "settle_room": ["_change_backdrop"]}
     assert writes == {"apply_views", "settle_room"}
+    # A change is asked for only in change_due, and change_due only through LookGroup: after a session closes without the
+    # keep file (closed), or once a kept group's file is gone between sessions (released). So a replay group shares one change.
+    appends = [owner(n) for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func) == "want_backdrop_change.append"]
+    assert appends == ["change_due"]
+    due = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func) == "change_due"]
+    assert len(due) == 2
+    for call in due:
+        lam = parent[call]
+        assert isinstance(lam, ast.Lambda)
+        kw = parent[lam]
+        assert isinstance(kw, ast.keyword) and kw.arg == "then"
+        assert ast.unparse(parent[kw].func) in ("looks.closed", "looks.released")
     on_closed = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "on_closed")
-    first_if = next(n for n in on_closed.body if isinstance(n, ast.If))
-    assert "keep_look" in ast.unparse(first_if.test) and isinstance(first_if.body[-1], ast.Return)
-    appends = [n for n in ast.walk(on_closed) if isinstance(n, ast.Call) and ast.unparse(n.func) == "want_backdrop_change.append"]
-    assert len(appends) == 1 and appends[0].lineno > first_if.body[-1].lineno
+    assert [ast.unparse(n.func) for n in ast.walk(on_closed) if isinstance(n, ast.Call) and "looks" in ast.unparse(n.func)] == ["looks.closed"]
+    preamble = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "preamble")
+    assert ast.unparse(preamble.body[0]) == "looks.opened()"
 
 
 # --- the held-out region (docs/adr/0038 V, "Views in safety batches") ----------------------------------------------------

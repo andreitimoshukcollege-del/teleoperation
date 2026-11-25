@@ -171,3 +171,44 @@ def test_a_view_on_the_wrong_side_of_its_specs_held_out_region_is_caught(tmp_pat
     assert held["views"]["view0"]["split"] == "test" and not any("held-out" in p for p in held["problems"])
     bad = views_check.check_take(_records_only_take(root, "c", 3, "source", 31, 2, azimuth=90.0), None)
     assert any("on the test side of the held-out region, in a train spec" in p for p in bad["problems"]), bad
+
+
+def test_each_replay_group_has_a_view_of_its_own_and_two_groups_sharing_one_are_caught(tmp_path):
+    """docs/adr/0038 V, "A new view for every source take": distinct viewpoints per twin (takes root), and two replay groups
+    with one viewpoint a problem when the spec draws a new view each change (not for fixed views without jitter)."""
+    twin0 = os.path.join(str(tmp_path), "jetrover-isaac", "mixed")
+    twin1 = os.path.join(str(tmp_path), "jetrover-isaac-twin1", "mixed")
+    set_aside = os.path.join(str(tmp_path), "jetrover-isaac-twin1", "_discarded", "mixed")
+    for d in (twin0, twin1, set_aside):
+        os.makedirs(d)
+    good = [_records_only_take(twin0, "t1", 100001, "source", 77, 4), _records_only_take(twin0, "t2", 100001, "replay", 77, 4),
+            _records_only_take(twin0, "t3", 100002, "source", 77, 5), _records_only_take(twin1, "u1", 200001, "source", 78, 0),
+            _records_only_take(set_aside, "u2", 200001, "replay", 78, 0), _records_only_take(twin1, "u3", 200002, "source", 78, 1)]
+    alone = _records_only_take(twin1, "u4", 0, "source", 78, 2)
+    os.remove(os.path.join(alone, "robothost.jlog"))  # a take outside any replay group: a group of its own
+    r = views_check.check_groups(good + [alone])
+    assert r["problems"] == [] and r["groups_sharing_a_view"] == 0
+    assert r["twins"] == {"jetrover-isaac": {"takes": 3, "groups": 2, "viewpoints": 2},
+                          "jetrover-isaac-twin1": {"takes": 4, "groups": 3, "viewpoints": 3}}
+    # The pilot's fault: the next source take kept the group's change, so its view.
+    shared = _records_only_take(twin0, "t4", 100003, "source", 77, 5)
+    r = views_check.check_groups(good + [shared])
+    assert r["groups_sharing_a_view"] == 2 and len(r["problems"]) == 1
+    assert "2 replay groups share one view" in r["problems"][0] and "RP 100002" in r["problems"][0] and "RP 100003" in r["problems"][0]
+    assert r["twins"]["jetrover-isaac"] == {"takes": 4, "groups": 3, "viewpoints": 2}
+    # Fixed views without jitter stand still by design: counted, not a problem.
+    fixed = os.path.join(os.path.dirname(SAFETY), "fixed-example.json")
+    still = [_records_only_take(twin0, f"f{i}", 300000 + i, "source", 79, i, spec_path=fixed) for i in (1, 2)]
+    r = views_check.check_groups(still)
+    assert r["problems"] == [] and r["twins"]["jetrover-isaac"] == {"takes": 2, "groups": 2, "viewpoints": 1}
+    assert not views_check.promises_new_views(views.load(fixed)) and views_check.promises_new_views(views.load(SAFETY))
+
+
+def test_main_fails_a_set_whose_groups_share_a_view(tmp_path, capsys):
+    root = os.path.join(str(tmp_path), "jetrover-isaac", "mixed")
+    os.makedirs(root)
+    a = _records_only_take(root, "a", 1, "source", 31, 2)
+    b = _records_only_take(root, "b", 2, "source", 31, 2)
+    assert views_check.main([a, b]) == 1
+    result = json.loads(capsys.readouterr().out.strip().splitlines()[-1][len("RESULT "):])
+    assert result["groups_sharing_a_view"] == 2 and result["viewpoints"] == {"jetrover-isaac": {"takes": 2, "groups": 2, "viewpoints": 1}}

@@ -22,6 +22,12 @@ batches). Takes are paired by ``robothost.jlog``'s ``RP`` (the group, the role);
 and its ``VW`` records (pose, intrinsics, draw, gain) must equal its source's. A replay whose source is not among the takes
 is counted, not checked.
 
+And **each replay group must have a view of its own** (docs/adr/0038 V, "A new view for every source take"): a take outside
+any group is a group of its own, and two groups whose takes have the same viewpoint (every view camera's size, intrinsics
+and pose in ``VW``) are a problem when the spec promises a new view each change (a drawn slot, or a fixed one with jitter;
+fixed views without jitter stand still by design and are only counted). The summary gives, per twin (the takes root, e.g.
+``jetrover-isaac-twin1``), its takes, replay groups and distinct viewpoints: with a drawn spec, viewpoints equal groups.
+
 ``--sheet`` writes a contact sheet: a row per take, a column per view, each the take's first recorded frame captioned with
 the view's mode, azimuth, elevation, distance and field of view.
 
@@ -249,6 +255,57 @@ def check_replays(takes):
     return out
 
 
+def twin_of(take):
+    """The takes root a take was recorded into (one per twin, e.g. jetrover-isaac, jetrover-isaac-twin1):
+    <root>/<category>/<take>, or <root>/_discarded/<category>/<take> for one the checker set aside."""
+    parts = os.path.normpath(os.path.abspath(take)).split(os.sep)
+    if len(parts) >= 4 and parts[-4] != "" and parts[-3] == "_discarded":
+        return parts[-4]
+    return parts[-3] if len(parts) >= 3 else ""
+
+
+def promises_new_views(spec):
+    """Whether the spec draws its views afresh at every change: a drawn slot, or a fixed one with jitter."""
+    return any(spec.slot(k).fixed is None or spec.slot(k).fixed.jitter_m or spec.slot(k).fixed.jitter_deg
+               for k in range(spec.count))
+
+
+def check_groups(takes):
+    """Each replay group's viewpoint against the other groups', and the distinct viewpoints per twin. A viewpoint is every
+    view camera's VW size, intrinsics and pose (not its change or gain); a take outside a group is a group of its own."""
+    out = {"twins": {}, "groups_sharing_a_view": 0, "problems": []}
+    holders = {}  # viewpoint -> {group: first take}
+    promised = {}
+    for t in takes:
+        got = view_records(t)
+        if got is None:
+            continue
+        path = os.path.join(t, "isaac", "views.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                spec = views.parse(json.load(f)["spec"])
+        except (OSError, ValueError, KeyError):
+            continue
+        role = replay_role(t)
+        group = f"RP {role[0]}" if role else os.path.basename(t)
+        twin = twin_of(t)
+        viewpoint = tuple(tuple(r[1:17]) for r in got[2])
+        info = out["twins"].setdefault(twin, {"takes": 0, "groups": set(), "viewpoints": set()})
+        info["takes"] += 1
+        info["groups"].add(group)
+        info["viewpoints"].add(viewpoint)
+        holders.setdefault(viewpoint, {}).setdefault(group, t)
+        promised[viewpoint] = promised.get(viewpoint, False) or promises_new_views(spec)
+    for viewpoint, groups in holders.items():
+        if len(groups) > 1 and promised[viewpoint]:
+            out["groups_sharing_a_view"] += len(groups)
+            names = ", ".join(f"{g} ({os.path.basename(t)})" for g, t in sorted(groups.items()))
+            out["problems"].append(f"{len(groups)} replay groups share one view, where the spec draws a new one each: {names}")
+    out["twins"] = {k: {"takes": v["takes"], "groups": len(v["groups"]), "viewpoints": len(v["viewpoints"])}
+                    for k, v in sorted(out["twins"].items())}
+    return out
+
+
 def write_sheet(path, rows):
     import cv2
     import numpy as np
@@ -283,15 +340,17 @@ def main(argv=None) -> int:
     if args.sheet and sheet:
         write_sheet(args.sheet, sheet)
     replays = check_replays(args.takes)
+    groups = check_groups(args.takes)
     depth = [v["depth_p99_mm"] for r in results for v in r["views"].values() if v.get("depth_p99_mm") is not None]
     modes = [v["mode"] for r in results for v in r["views"].values()]
     summary = {"takes": len(results), "with_problems": sum(1 for r in results if r["problems"]),
                "views": len(modes), "moving": modes.count("moving"),
                "depth_p99_mm_worst": max(depth) if depth else None,
                "replays": {k: replays[k] for k in ("pairs", "identical", "without_source")},
-               "problems": ([p for r in results for p in r["problems"]] + replays["problems"])[:20]}
+               "viewpoints": groups["twins"], "groups_sharing_a_view": groups["groups_sharing_a_view"],
+               "problems": ([p for r in results for p in r["problems"]] + replays["problems"] + groups["problems"])[:20]}
     print("RESULT " + json.dumps(summary, sort_keys=True))
-    return 0 if results and not summary["with_problems"] and not replays["problems"] else 1
+    return 0 if results and not summary["with_problems"] and not replays["problems"] and not groups["problems"] else 1
 
 
 if __name__ == "__main__":

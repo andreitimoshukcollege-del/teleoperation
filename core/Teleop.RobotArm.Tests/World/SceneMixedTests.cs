@@ -159,6 +159,7 @@ namespace Teleop.RobotArm.Tests.World
                     Assert.True(rest == WorldScene.RestUpright || s.CanLie(i, rest), $"{name} seed {seed}: {o.Name} on rest {rest}");
                     Assert.True(o.HasSteps ? s.InSteps(i, scales[i]) : scales[i] == 1.0, $"{name} seed {seed}: {o.Name} at {scales[i]}");
                     Assert.True(s.FitsOnTable(i, p[i].X, p[i].Y, yaw, scales[i], rest), $"{name} seed {seed}: {o.Name} does not fit");
+                    Assert.False(s.InArmRest(i, p[i].X, p[i].Y, p[i].Z, yaw, scales[i], rest), $"{name} seed {seed}: {o.Name} where the arm stands between takes");
                     for (int k = 0; k < i; k++)
                     {
                         if (parked[k]) continue;
@@ -205,10 +206,28 @@ namespace Teleop.RobotArm.Tests.World
                         case SceneRole.Plank:
                             // Centred over the working band, its underside on its supports' tops, they under its ends, the gripper's room between.
                             units++;
-                            Assert.InRange(r, s.WorkMin - 1e-9, s.WorkMax + 1e-9);
-                            Assert.InRange(bearing, 0, s.WorkBearing + 1e-9);
-                            Assert.True(raised, $"{name} seed {seed}: {o.Name} on the table");
                             double c = Math.Cos(yaw), sn = Math.Sin(yaw);
+                            if (o.Overhead)
+                            {
+                                // An overhead bar (the third pass) lies square to the bearing of its line's nearest point to the base's axis,
+                                // that point over the working band's radii within the obstacles' bearing; its posts beyond the obstacles' band.
+                                double alongBar = p[i].X * c + p[i].Y * sn, nx = p[i].X - alongBar * c, ny = p[i].Y - alongBar * sn;
+                                Assert.InRange(Math.Sqrt(nx * nx + ny * ny), s.WorkMin - 1e-9, s.WorkMax + 1e-9);
+                                Assert.InRange(Math.Abs(Math.Atan2(ny, nx)), 0, s.ReachBearing + 1e-9);
+                                Assert.True(Math.Abs(alongBar) <= o.SizeX * scales[i] / 2 + 1e-9, $"{name} seed {seed}: {o.Name}'s nearest point off it");
+                                foreach (byte id in o.SupportIds)
+                                {
+                                    int k = s.IndexOf(id);
+                                    Assert.True(s.BeyondBand(k, p[k].X, p[k].Y, YawOf(p[k]), scales[k]), $"{name} seed {seed}: {s.Objects[k].Name} inside the obstacles' band");
+                                }
+                            }
+                            else
+                            {
+                                Assert.InRange(r, s.WorkMin - 1e-9, s.WorkMax + 1e-9);
+                                Assert.InRange(bearing, 0, s.WorkBearing + 1e-9);
+                            }
+
+                            Assert.True(raised, $"{name} seed {seed}: {o.Name} on the table");
                             foreach (byte id in o.SupportIds)
                             {
                                 int k = s.IndexOf(id);
@@ -308,9 +327,10 @@ namespace Teleop.RobotArm.Tests.World
                 Assert.InRange(m.MeanUnits, 1.3, 1.5);
                 Assert.InRange(m.MeanDistractors, 3.6, 4.0);
                 Assert.True(m.MissedPerLayout < 0.4, $"{m.MissedPerLayout:0.00} found no spot a layout");
-                // Raised on stands, and planks on their supports, in a share of the obstacles; every object takes part.
+                // Raised on stands, and planks on their supports (overhead bars among them, the third pass), in a share of the obstacles;
+                // every object takes part.
                 Assert.InRange(m.RaisedShare, 0.08, 0.30);
-                Assert.InRange(m.RigShare, 0.10, 0.30);
+                Assert.InRange(m.RigShare, 0.25, 0.55);
                 Assert.Equal(0, m.NeverPlaced);
                 // Uniform by area over the band: the share of centres nearer than its middle radius is about what the area holds.
                 Assert.InRange(m.InnerShare, m.InnerArea - 0.08, m.InnerArea + 0.08);
@@ -535,18 +555,18 @@ namespace Teleop.RobotArm.Tests.World
             sb.Append("objects: name, role, steps (min, max, or empty), supports (ids). fits: index, rest, scale, x, y, yaw, FitsOnTable at the yaw, FitsOnTable without one. ");
             sb.Append("overlaps: a, x, y, z, yaw, rest, scale, b, x, y, z, yaw, rest, scale, OverlapsAtHeights. holds: stand, x, y, z, yaw, scale, object, x, y, z, rest, scale, HoldsOnTop. ");
             sb.Append("elevated: index, rest, scale, z, RestingZ, IsElevated. pool: obstacleMin, obstacleMax, distractorMin, distractorMax, reachMin, reachMax, reachBearing, ");
-            sb.Append("standShare, rigShare, distractorReach, then the second pass's tallShare, workMin, workMax, workBearing, standTopMin, standTopMax, rigUnderMin, rigUnderMax; ");
-            sb.Append("each object's fifth column is 1 for a tall thin obstacle (IsTall).\",\n");
+            sb.Append("standShare, rigShare, distractorReach, then the second pass's tallShare, workMin, workMax, workBearing, standTopMin, standTopMax, rigUnderMin, rigUnderMax, then the third pass's overheadShare and armRest (six, or none); ");
+            sb.Append("each object's fifth column is 1 for a tall thin obstacle (IsTall), its sixth 1 for an overhead bar.\",\n");
             sb.Append($" \"scene\": \"{s.Name}\",\n");
             sb.Append($" \"sha256\": \"{Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant()}\",\n");
-            sb.Append($" \"pool\": {Row(s.ObstacleMin, s.ObstacleMax, s.DistractorMin, s.DistractorMax, s.ReachMin, s.ReachMax, s.ReachBearing, s.StandShare, s.RigShare, s.DistractorReach, s.TallShare, s.WorkMin, s.WorkMax, s.WorkBearing, s.StandTopMin, s.StandTopMax, s.RigUnderMin, s.RigUnderMax)},\n");
+            sb.Append($" \"pool\": {Row(s.ObstacleMin, s.ObstacleMax, s.DistractorMin, s.DistractorMax, s.ReachMin, s.ReachMax, s.ReachBearing, s.StandShare, s.RigShare, s.DistractorReach, s.TallShare, s.WorkMin, s.WorkMax, s.WorkBearing, s.StandTopMin, s.StandTopMax, s.RigUnderMin, s.RigUnderMax).TrimEnd(']')}, {Row(new[] { s.OverheadShare }.Concat(s.ArmRest).ToArray()).TrimStart('[')},\n");
             sb.Append($" \"distractorRegions\": {Row(s.DistractorRegions)},\n");
             sb.Append(" \"objects\": [\n");
             for (int i = 0; i < s.Objects.Length; i++)
             {
                 SceneObject o = s.Objects[i];
                 string steps = o.HasSteps ? Row(o.StepMin, o.StepMax) : "[]";
-                sb.Append($"  [\"{o.Name}\", \"{o.Role.ToString().ToLowerInvariant()}\", {steps}, {Row(o.SupportIds.Select(b => (double)b).ToArray())}, {(s.IsTall(i) ? 1 : 0)}]{(i < s.Objects.Length - 1 ? "," : "")}\n");
+                sb.Append($"  [\"{o.Name}\", \"{o.Role.ToString().ToLowerInvariant()}\", {steps}, {Row(o.SupportIds.Select(b => (double)b).ToArray())}, {(s.IsTall(i) ? 1 : 0)}, {(o.Overhead ? 1 : 0)}]{(i < s.Objects.Length - 1 ? "," : "")}\n");
             }
 
             sb.Append(" ],\n");

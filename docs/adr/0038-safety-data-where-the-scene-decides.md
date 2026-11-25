@@ -378,6 +378,83 @@ for both columns:
   - how often `OVERLAPS_ARM` refuses a tall rod, a plank or a raised object;
   - the planner's figures with M3's changes.
 
+**The third pass (2026-11-24, branch `work/v2-scene7`): heights.** World-models reviewed the pilot
+`jetrover_20261124_201301_cc0719`. At contact the tool point sat a median 12 cm below the base frame, 80% of contacts between -15
+and -6 cm. Nearly every obstacle stood on the table, about 20 cm below the base frame, so "low means unsafe" passed. They asked for
+raised and tall pieces, overhead bars the arm meets on its way up, no 5 cm band holding more than about 40% of the contacts, and a
+different height mix in the held-out family. Where this differs from the passes above, it replaces them.
+- **Three fields, mixed pools only, all 0 or absent by default.** With them unset a pool draws exactly what it drew before. The bench
+  draws as before: `layout-jetrover-bench.txt`, the rests golden and the bench's pool layouts did not change. Both readers refuse the
+  same 12 new cases (`role`, `pool`) and accept 2 more (vectors.json).
+  - `overhead` (an object's): a plank on two supports that a layout lays across the arm's reach as an overhead bar. The point of its
+    line nearest the base's axis is `workMin`-`workMax` out, within `reachBearing`, and the bar lies square to that bearing. Its centre
+    is anywhere along the line within half its length. Each post's footprint stays at least `reachMax` (0.34 m) from the axis. That
+    is outside the obstacles' band, where the arm at home never reaches as the base turns, so the posts never block the turn. Up to 256
+    tries (`WorldScene.MaxBarTries`), because few spots take a 72 cm bar and its posts. Placement takes a bar as any plank: Isaac's
+    rules, `WorldHost` parking its group, joint-drive's aims. A bar's underside height comes from `rigUnderMin`/`rigUnderMax` and the
+    nearest step of its posts' steps, as any rig's. Both scenes raise `rigUnderMax` to 0.5. The other rigs' supports top out below the
+    old maximum, so their draws are unchanged.
+  - `overheadShare`: the chance that an obstacle is a bar, when one is free. It is drawn before `rigShare`, and the other planks no
+    longer include the bars. A scene with an overhead plank needs `overheadShare` above 0, and the reverse.
+  - `armRest`, `[xMin, xMax, yMin, yMax, zMin, zMax]`: where the arm stands between takes. That is home (the gripper level 28 cm above
+    the table, out to x 0.31) and the tails, which end with the wrist 0-10 cm above the base frame in front. A layout stands nothing
+    within the clearance of the box, and neither does `WorldHost`'s redraw. Both scenes use [0.12, 0.36, -0.06, 0.06, -0.03, 0.17]. So
+    a bar crossing the front stands at least 18 cm above the base frame, and a lower bar is laid at the side. Isaac checks the arm
+    where it really is, so `world.py` takes no rule from the box.
+- **The heights the arm passes through** (the URDF). The shoulder is 3.5 cm above the base frame, and both links are 13 cm. The elbow
+  stays within 13 cm of the axis, between -3 and +16.5 cm. The wrist reaches +30 cm with the arm straight up. joint-drive's wrist
+  targets lie between -10 and +10 cm. Bars over the reach band, 16-30 cm out, therefore meet the forearm, the wrist and the gripper,
+  not the elbow. The elbow reaches only over the robot's own keep-out, where nothing may stand.
+- **The scenes.**
+  - Train: `overhead-bar` (84), a 72×3×2.5 cm box (metal or wood looks), on `bar-post-a`/`-b` (85, 86), 3×3×31 cm, steps -2..1. Its
+    underside is +0.2, +5.2, +11.4 or +19.1 cm from the base frame.
+  - Held out: `overhead-board` (131), a 70×6×1.5 cm board (its own wood looks), on `board-post-a`/`-b` (132, 133), 3.5×3.5×28 cm, steps
+    -1..2. Its underside is +2.8, +8.4, +15.4 or +24.1 cm, none of the train family's heights.
+  - Shares: train `overheadShare` 0.25, `rigShare` 0.3, `tallShare` 0.25, `standShare` 0.45. Held out 0.3, 0.3, 0.2 and 0.5. The scenes
+    have 32 and 29 objects (the cap is 32).
+
+Measured over 2000 layouts (`SceneHeightMeasureTests`, seeds 1-2000). "Before" is 7dd0356's scene file, which the new code draws as
+7dd0356 did. Each obstacle (an object or a plank) adds weight 1 spread evenly over its height span. The span is clipped to the table
+and +30 cm, and the bands are 5 cm from -20 cm, base frame:
+
+| | train before | train after | held-out before | held-out after |
+|---|---|---|---|---|
+| obstacles a layout; found no spot a layout | 1.46; 0.127 | 1.39; 0.211 | 1.46; 0.201 | 1.40; 0.269 |
+| obstacles on the table / on a stand / tall / rigs / bars | 0.467 / 0.162 / 0.178 / 0.193 / 0 | 0.235 / 0.152 / 0.200 / 0.188 / 0.224 | 0.463 / 0.138 / 0.202 / 0.197 / 0 | 0.228 / 0.149 / 0.187 / 0.208 / 0.228 |
+| height spans by band, -20 … +30 cm | .393 .220 .216 .112 .045 .012 .003 0 0 0 | .219 .196 .225 .085 .062 .078 .087 .016 .031 0 | .506 .157 .047 .071 .117 .069 .018 .008 .006 0 | .317 .145 .040 .068 .146 .122 .015 .084 .039 .024 |
+| the same, above the base frame | 0.060 | 0.274 | 0.218 | 0.430 |
+| one height each (plank: underside, tall: middle, else top) | .214 .277 .322 .137 .031 .018 0 0 0 0 | .105 .228 .301 .095 .057 .084 .084 .047 0 0 | .388 .205 .074 .148 .143 .023 .014 .007 0 0 | .263 .145 .060 .128 .167 .087 .011 .081 .057 0 |
+| bars' bearing, 15-degree bins (the nearest point) | | 49 26 24 155 310 58 0 | | 52 48 25 120 325 68 0 |
+| placements the arm at home would meet (1 cm) | 102 in 101 layouts | 0 | 360 in 302 | 0 |
+
+- **What it costs.** The rest box and the bars' spots leave more objects without a spot: 0.211 against 0.127 a layout in the train
+  family. Rigs crossing the front lose the most. Without the box, home would meet 421 placements (train) and 756 (held out).
+- **Planning, with the planner at 7dd0356** (`joint-drive --script mixed --speed 3.8 --seconds 15 --seed 1 --dry-run --layouts 1-200`,
+  contacts by the model over every move). `MixedContactHeightTests` repeats the dry run's onsets and adds the touching link's point:
+  the arm's box that overlaps the object's, its centre clamped into the object's box. Shares in 5 cm bands from -20 cm, base frame:
+
+  | | train before | train after | held-out before | held-out after |
+  |---|---|---|---|---|
+  | planned; onsets | 197; 553 | 191; 403 | 185; 465 | 198; 362 |
+  | the tool point | .119 .329 .277 .181 .063 .031 0 0 | .060 .243 .268 .246 .099 .052 .030 .002 | .170 .277 .202 .129 .114 .080 .022 .002 | .077 .345 .144 .166 .171 .072 .022 .003 |
+  | the touching link's point | .118 .255 .250 .244 .092 .040 .002 0 | .057 .186 .246 .223 .122 .109 .057 0 | .185 .228 .112 .155 .187 .086 .032 .011 | .080 .296 .077 .177 .188 .130 .036 .017 |
+  | the tool point's p10 / p50 / p90, cm | -15.2 / -9.2 / -0.4 | -13.9 / -6.3 / 3.7 | | |
+  | touched kinds | other 203, raised 147, rod 139, plank 36 | rod 143, raised 89, other 68, bar 57, plank 32 | other 179, rod 112, raised 101, plank 34 | rod 127, raised 101, other 78, plank 33, bar 15 |
+
+  No band holds 40% of the contacts in either family, before or after. The largest is 0.268 in the train family and 0.345 in the
+  held-out family. This is a dry run, so the pilot's 80%-in-9-cm is not what these figures measure. The touching links are the pads,
+  the wrist and the gripper. No contact is the elbow's or the upper arm's: the planner aims at the objects' sides and tops, not at a
+  bar from below. These figures leave out the motion workstream's planner changes (aims at every height, accidents at obstacles).
+  Nine train layouts of 200 found no plan, against three before.
+- **Tests.** The vectors; per layout over 400 layouts, nothing in the rest box, and bars square to their bearing with their posts beyond
+  the band; `SceneHeightMeasureTests`: no band above 40%, bars over 15% of the obstacles, no post inside the band, nothing home meets,
+  the two families' bar heights disjoint; the rules golden's pool row with `overheadShare` and `armRest` and each object's overhead
+  flag, read alike by `test_scene.py`; Isaac's model applying every placement of the new first 20 layouts of each scene
+  (`golden/scene-layouts-jetrover-mixed.json`).
+- **Not checked on the twin:** the bars and posts at their steps, which are kinematic and should stand still; whether the twin's tail
+  poses stay inside the rest box (`OVERLAPS_ARM` refusals); the new looks on 72 cm bars; a low bar at the side blocks the arm at home
+  turning towards it.
+
 ### M, motion
 
 **Built** (branch `work/v2-motion`; docs/adr/0038 decisions 1 and 2, items 1, 6, 7, 8, 10, 11, 23, 24 and 29's caps).

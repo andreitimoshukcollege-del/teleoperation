@@ -220,7 +220,7 @@ namespace Teleop.RobotArm.Tests.World
         }
 
         /// <summary>One of the collision model's arm bodies at a pose: its centre, axes and half extents in the base frame.</summary>
-        private readonly struct ArmBox
+        internal readonly struct ArmBox
         {
             public readonly Vector3 Centre, X, Y, Z, Half;
 
@@ -235,7 +235,7 @@ namespace Teleop.RobotArm.Tests.World
         }
 
         /// <summary>The JetRover model's bodies with the arm at its home pose (where a layout may find it standing).</summary>
-        private static ArmBox[] ArmAtHome()
+        internal static ArmBox[] ArmAtHome()
         {
             RobotArmProfile profile = RobotArmProfile.JetRoverMeasuredDefault;
             ArmCollisionModel model = profile.Collision!;
@@ -255,7 +255,7 @@ namespace Teleop.RobotArm.Tests.World
         }
 
         /// <summary>Whether a box (centre, yaw about the vertical, half extents) comes within <paramref name="margin"/> of any arm body.</summary>
-        private static bool Meets(ArmBox[] arm, double x, double y, double z, double yaw, double hx, double hy, double hz, double margin)
+        internal static bool Meets(ArmBox[] arm, double x, double y, double z, double yaw, double hx, double hy, double hz, double margin)
         {
             var c = new Vector3((float)x, (float)y, (float)z);
             var ax = new Vector3((float)Math.Cos(yaw), (float)Math.Sin(yaw), 0f);

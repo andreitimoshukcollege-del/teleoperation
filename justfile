@@ -2768,6 +2768,34 @@ camera-probe seconds="10" max_fps="0" save="" remote_host=default_jetrover_host 
     cd core && dotnet run --project Teleop.CameraHost -c Release -- probe --host $(just _robot-host "{{remote_host}}") \
         --port {{port}} --local-port {{local_port}} --seconds {{seconds}} --max-fps {{max_fps}} {{ if save != "" { "--save '" + save + "'" } else { "" } }}
 
+# Record every frame of the robot's three camera feeds at once, for camera calibration (a ChArUco board moved through the views) or a still scene: front = the DaBai (6003, 640x360), left/right = the Femto Bolts' colour (6008/6009, 1280x720), each into recordings/calibration/<UTC time>-<label>/<camera>/ as JPEGs named by the robot's capture stamp (one clock, so frames match across cameras) with frames.csv. Moves nothing; takes the feeds from the headset while it runs
+[group('robot: checks and diagnostics (nothing moves)')]
+camera-calib-record label="calib" seconds="120" max_fps="10" remote_host=default_jetrover_host:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    case "{{label}}" in *[!A-Za-z0-9_-]*) echo "error: label must be letters, digits, - or _" >&2; exit 1 ;; esac
+    host=$(just _robot-host "{{remote_host}}")
+    dir="recordings/calibration/$(date -u +%Y%m%dT%H%M%SZ)-{{label}}"
+    mkdir -p "$dir"
+    printf 'camera,port,device,resolution\nfront,6003,Orbbec DaBai DCW (auto),640x360\nleft,6008,Femto Bolt usb 1.4.3,1280x720\nright,6009,Femto Bolt usb 1.4.2,1280x720\n' > "$dir/cameras.csv"
+    echo "recording {{seconds}} s at up to {{max_fps}} fps per camera into $dir"
+    cd core && dotnet build Teleop.CameraHost -c Release --nologo -v q > /dev/null
+    pids=()
+    for spec in "front 6003 6104" "left 6008 6108" "right 6009 6109"; do
+        set -- $spec
+        dotnet run --no-build --project Teleop.CameraHost -c Release -- probe --host "$host" --port "$2" --local-port "$3" \
+            --seconds {{seconds}} --max-fps {{max_fps}} --save-dir "../$dir/$1" > "../$dir/$1.log" 2>&1 &
+        pids+=($!)
+    done
+    rc=0; for p in "${pids[@]}"; do wait "$p" || rc=1; done
+    for c in front left right; do echo "[$c] $(grep -E '^== received' "../$dir/$c.log" || echo 'no frames: see '"$dir/$c.log")"; done
+    exit $rc
+
+# Record depth + colour (+ every ir_every'th IR frame) from both Femto Bolts through Orbbec SDK v2 (user-space in /home/jetson/orbbec, fetched on first run), with each device's factory calibration as JSON, into recordings/depth/<UTC>-<label>/ on this machine (left = usb 1.4.3, right = 1.4.2). Moves nothing, but stops teleop-camerahost-left/-right for the capture and always starts them again; the DaBai sender, RobotHost and ROS are untouched. probe=true only lists the devices and their sync config. Needs 4 GB free on the robot; the robot's copy is deleted once the pull checks out
+[group('robot: checks and diagnostics (nothing moves)')]
+femto-record label="static" seconds="120" fps="5" ir_every="5" probe="false" remote_host=default_jetrover_host:
+    bash robot/femto/femto-record.sh "$(just _robot-host "{{remote_host}}")" "{{label}}" "{{seconds}}" "{{fps}}" "{{ir_every}}" recordings/depth {{ if probe == "true" { "probe" } else { "record" } }}
+
 # Show the robot's camera live in a window on this machine until Enter -- moves nothing, touches no service: subscribes as the headset does and serves the frames to a browser window at http://localhost:<http_port>/ (Edge's app window when it can). The sender streams to its newest subscriber only, so while this runs the headset loses the feed (close one of the two). Needs the camera sender running (just camera-logs) and inbound UDP on 6004 allowed by this machine's firewall. seconds=0 runs until Enter
 [group('robot: checks and diagnostics (nothing moves)')]
 camera-view seconds="0" max_fps="0" http_port="8090" remote_host=default_jetrover_host:

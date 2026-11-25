@@ -349,3 +349,49 @@ headset. CameraHost records them itself.
    too.
 6. **Cost:** about 42 KB a frame at 640×360, so about 4.5 GB an hour at 30 fps, on the Jetson until the take is copied
    off (ADR 0036 decision 7).
+
+## Amendment 4 (2026-11-25): recording the three cameras for calibration, and their calibration
+
+On 2026-11-24 the user said the cameras are placed as they want for data collection, with one exception: the DaBai
+(`front`) sits in a third-person spot behind the robot for now, not on the arm. The two Femto Bolts are the robot's
+`left` (USB 1.4.3, serial CL8K14101J3, port 6008) and `right` (USB 1.4.2, serial CL8K14101EY, port 6009). Their
+CameraHost senders stream 1280x720 colour; the DaBai streams 640x360 on 6003. Only the DaBai records into sessions.
+
+**Recording every frame.** `Teleop.CameraHost probe --save-dir <folder>` keeps every complete frame as a JPEG named by
+its capture stamp (the sender's clock, which all three senders on the Jetson share), plus `frames.csv`.
+`just camera-calib-record <label> <seconds> <max fps>` runs one such probe per feed at once into
+`recordings/calibration/<UTC>-<label>/`. It moves nothing, and the headset loses the feeds while it runs.
+
+**The first recording.** `20261124T235328Z-charuco` ran for 120 s at about 4 fps per feed (the PC reached the robot only
+over relayed Tailscale). The user moved a box with a ChArUco board through the views: 7x9 squares, 28 mm squares,
+21 mm markers, DICT_5X5, ids 0-30. The board is described in the recording's `board.json`. Copies are in the C:
+checkout's `recordings/` (gitignored) and on the GPU machine under `~/data/real-cameras/calibration/`.
+
+**Calibration** (`scripts/gpu/charuco_calibrate.py`, written to the recording's `calibration.json`). It uses only still
+views: the board's corners moved under 1.5 px since the same camera's previous frame.
+
+| camera | frames with the board / still | intrinsics rms | fx, fy | field of view |
+|---|---|---|---|---|
+| front (DaBai) | 66 / 36 | 0.40 px | 335, 332 | 87 x 57 deg |
+| left (Femto Bolt) | 193 / 153 | 0.37 px | 778, 768 | 79 x 50 deg |
+| right (Femto Bolt) | 142 / 101 | 0.37 px | 775, 766 | 79 x 50 deg |
+
+Orbbec gives the Femto Bolt's colour field of view as 80 x 51 deg, which agrees with the left and right rows.
+
+The poses come from a joint solve over 73 board positions that two or more cameras saw within 120 ms. The intrinsics
+are fixed, and the solve fits the camera poses and board poses together under a Huber loss.
+- Reprojection rms 0.62 px for left, 0.53 px for right and 0.91 px for front.
+- Before the joint solve, the pairwise poses' front->left->right loop missed the identity by 0.99 deg and 8.6 mm.
+- Right is 46.7 cm from left and front is 17.8 cm from left, in left's frame.
+- As a visual check, the board's corners were drawn from the left camera's pose and the calibration alone into the
+  right and front images, and they land on the board.
+
+**Not done:**
+- **The cameras' poses in the robot's base frame.** This needs a link to the robot: the arm seen with its joint
+  states, or the board at a known spot on the robot.
+- **The DaBai's pose.** It is only valid while the camera stays in its current temporary spot.
+- **Depth.** `just femto-record` (robot/femto) records the Femto Bolts' depth, IR and colour through Orbbec's SDK,
+  installed in user space on the Jetson. It is written but has not run: whether the depth engine runs on the Jetson
+  Nano is the first thing to find out.
+- **Moving either Femto Bolt invalidates its pose.** Record a new calibration after any change.
+

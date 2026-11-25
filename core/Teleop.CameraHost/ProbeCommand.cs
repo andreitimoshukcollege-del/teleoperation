@@ -19,7 +19,7 @@ namespace Teleop.CameraHost
     /// </summary>
     internal static class ProbeCommand
     {
-        public static int Run(string host, int port, int localPort, double seconds, ushort maxFps, string? savePath)
+        public static int Run(string host, int port, int localPort, double seconds, ushort maxFps, string? savePath, string? saveDir = null)
         {
             if (!IPAddress.TryParse(host, out IPAddress? address))
             {
@@ -37,6 +37,16 @@ namespace Teleop.CameraHost
             var reassembler = new CameraFrameReassembler(slotCount: 3, maxFrameBytes: 256 * 1024);
             var receive = new byte[CameraChunkCodec.MaxDatagramBytes];
             long tps = Stopwatch.Frequency;
+
+            StreamWriter? index = null;
+            if (!string.IsNullOrEmpty(saveDir))
+            {
+                // Every complete frame, named by the sender's capture stamp so frames of several cameras on the same sender
+                // (one clock) can be matched; frames.csv lists them with the stamp's rate and this machine's arrival time.
+                Directory.CreateDirectory(saveDir);
+                index = new StreamWriter(Path.Combine(saveDir, "frames.csv"));
+                index.WriteLine("file,frame_id,capture_ticks,ticks_per_second,width,height,bytes,arrival_s");
+            }
 
             var arrivalIntervalsMs = new List<double>();
             var sizes = new List<double>();
@@ -102,9 +112,17 @@ namespace Teleop.CameraHost
                     }
 
                     lastJpeg = jpeg.ToArray();
+                    if (index != null)
+                    {
+                        string name = $"{info.Frame.CaptureTicks:D20}_{info.Frame.FrameId:D8}.jpg";
+                        File.WriteAllBytes(Path.Combine(saveDir!, name), lastJpeg);
+                        index.WriteLine(FormattableString.Invariant(
+                            $"{name},{info.Frame.FrameId},{info.Frame.CaptureTicks},{info.Frame.TicksPerSecond},{info.Frame.Width},{info.Frame.Height},{info.ByteCount},{(arrival - start) / (double)tps:0.000000}"));
+                    }
                 }
             }
 
+            index?.Dispose();
             CameraReassemblerDiagnostics d = reassembler.Diagnostics;
             double elapsed = (Stopwatch.GetTimestamp() - start) / (double)tps;
             Console.WriteLine($"== received {datagrams} datagrams, {frames} complete frames in {elapsed:0.0} s ({frames / elapsed:0.0} fps)");
@@ -125,6 +143,11 @@ namespace Teleop.CameraHost
             {
                 File.WriteAllBytes(savePath, lastJpeg);
                 Console.WriteLine($"   last frame saved to {Path.GetFullPath(savePath)}");
+            }
+
+            if (index != null)
+            {
+                Console.WriteLine($"   all {frames} frames saved to {Path.GetFullPath(saveDir!)} (frames.csv lists them)");
             }
 
             if (frames == 0)

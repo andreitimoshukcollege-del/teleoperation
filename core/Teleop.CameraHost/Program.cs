@@ -24,8 +24,9 @@ namespace Teleop.CameraHost
             "      record them into the session it names (docs/adr/0014 amendment 3): only into takes from the\n" +
             "      headset's RECORD button unless --record-frames all. Linux only.\n" +
             "  Teleop.CameraHost probe --host <robot ip> [--port 6003] [--local-port 6004] [--seconds 10]\n" +
-            "                          [--max-fps 0] [--save <path.jpg>]\n" +
-            "      Subscribe, reassemble and report what arrives. Exit 0 if a frame arrived, else 1.\n" +
+            "                          [--max-fps 0] [--save <path.jpg>] [--save-dir <folder>]\n" +
+            "      Subscribe, reassemble and report what arrives. Exit 0 if a frame arrived, else 1. --save keeps\n" +
+            "      the last frame; --save-dir keeps every frame, named by its capture stamp, with frames.csv.\n" +
             "  Teleop.CameraHost view --host <robot ip> [--port 6003] [--local-port 6004] [--seconds 0]\n" +
             "                          [--max-fps 0] [--http-port 8090] [--no-open]\n" +
             "      Subscribe and show the feed live at http://localhost:<http-port>/, in a window it opens.\n" +
@@ -52,7 +53,7 @@ namespace Teleop.CameraHost
             }
 
             string device = "/dev/video0", host = string.Empty;
-            string? save = null, recordControl = null;
+            string? save = null, saveDir = null, recordControl = null;
             double recordMinFree = 2;
             string recordFrames = "takes";
             // 640x360, not 640x480: the DaBai's 4:3 modes are the middle of its 16:9 sensor (docs/adr/0014, 2026-10-25).
@@ -77,6 +78,7 @@ namespace Teleop.CameraHost
                     "--device" when hasValue => Set(ref device, value),
                     "--host" when hasValue => Set(ref host, value),
                     "--save" when hasValue => Set(ref save, value),
+                    "--save-dir" when hasValue => Set(ref saveDir, value),
                     "--width" when hasValue => uint.TryParse(value, out width),
                     "--height" when hasValue => uint.TryParse(value, out height),
                     "--fps" when hasValue => uint.TryParse(value, out fps),
@@ -128,7 +130,7 @@ namespace Teleop.CameraHost
                         return 2;
                     }
 
-                    return ProbeCommand.Run(host, port, localPort, seconds, maxFps, save);
+                    return ProbeCommand.Run(host, port, localPort, seconds, maxFps, save, saveDir);
                 case "view":
                     if (host.Length == 0)
                     {

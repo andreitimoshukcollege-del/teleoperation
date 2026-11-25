@@ -69,6 +69,7 @@ namespace Teleop.Eval.JointDrive
             var byModelEvents = new ContactTally();
             var byMovingEvents = new ContactTally();
             var toolBias = new List<double>();
+            var objectFates = new Dictionary<string, int[]>(); // fixed, tipped, moved, stayed: objects, later physics events, later model events
             var jointBias = new[] { new List<double>(), new List<double>(), new List<double>(), new List<double>(), new List<double>() };
             var physEvents = new ContactTally();
             var match = new int[2, 3]; // [other, accident] x [both, only the model, only physics]
@@ -267,6 +268,7 @@ namespace Teleop.Eval.JointDrive
                 var modelOnsets = new List<(double T, int Object, bool Accident)>();
                 var inside = new bool[reach.Count];
                 var modelEvents = new MixedDryRun.ContactEvents();
+                var modelEventTimes = new List<(double T, int Object)>();
                 foreach (Sample s in follow)
                 {
                     arm.At(s.Pose, s.Gripper);
@@ -279,7 +281,11 @@ namespace Teleop.Eval.JointDrive
                             modelOnsets.Add((s.T, reach[i].Id, acc));
                             string ln = link == ArmLink.Gripper ? "gripper" : link == ArmLink.Wrist ? "wrist" : link.ToString().ToLowerInvariant();
                             byModel.Add(acc, arm.Tool.Z, ln);
-                            if (modelEvents.Begin(reach[i].Id, s.T)) byModelEvents.Add(acc, arm.Tool.Z, ln);
+                            if (modelEvents.Begin(reach[i].Id, s.T))
+                            {
+                                byModelEvents.Add(acc, arm.Tool.Z, ln);
+                                modelEventTimes.Add((s.T, reach[i].Id));
+                            }
                             if (rows) Console.WriteLine(FormattableString.Invariant($"    model contact {reach[i].Id} at {s.T - t0:0.00} s by {link.ToString().ToLowerInvariant()}{(acc ? ", in an accident" : "")}; tool z {arm.Tool.Z * 100:0.0} cm"));
                         }
 
@@ -354,6 +360,43 @@ namespace Teleop.Eval.JointDrive
                     physEvents.Add(acc, arm.Tool.Z, links.Length > 0 && links[0] >= 0 && links[0] < LinkNames.Length ? LinkNames[links[0]] : "link");
                 }
 
+                // Each object physics touched: how far it moved and tipped after its first touch, and how many contact events the model
+                // and physics give it after that one.
+                foreach (int o in physicsOnsets.Select(x => x.Object).Distinct())
+                {
+                    double first = physicsOnsets.First(x => x.Object == o).T;
+                    int k0 = poses.FindIndex(x => x.T >= first);
+                    if (k0 < 0 || !poses[0].At.TryGetValue((byte)o, out double[]? p0)) continue;
+                    double moved = 0, tilt = 0;
+                    for (int k = k0; k < poses.Count; k++)
+                    {
+                        if (!poses[k].At.TryGetValue((byte)o, out double[]? v) || v.Length < 7) continue;
+                        moved = Math.Max(moved, Math.Sqrt((v[0] - p0[0]) * (v[0] - p0[0]) + (v[1] - p0[1]) * (v[1] - p0[1])));
+                        double dot = Math.Abs(v[3] * p0[3] + v[4] * p0[4] + v[5] * p0[5] + v[6] * p0[6]);
+                        tilt = Math.Max(tilt, 2 * Math.Acos(Math.Min(1, dot)) * 180 / Math.PI);
+                    }
+
+                    int si = scene.IndexOf((byte)o);
+                    string name = si >= 0 ? scene.Objects[si].Name : o.ToString(CultureInfo.InvariantCulture);
+                    bool fixedOne = si >= 0 && !scene.Objects[si].Movable;
+                    string state = fixedOne ? "fixed" : tilt > 30 ? "tipped" : moved > 0.03 ? "moved" : "stayed";
+                    int physicsLater = 0, modelLater = 0;
+                    var pe = new MixedDryRun.ContactEvents();
+                    foreach ((double t, int ob, bool on, int[] _) in transitions)
+                    {
+                        if (ob != o) continue;
+                        if (!on) pe.Stop(ob, t);
+                        else if (pe.Begin(ob, t) && t > first + MixedDryRun.ContactEvents.MergeSeconds) physicsLater++;
+                    }
+
+                    modelLater = modelEventTimes.Count(x => x.Object == o && x.T > first + MixedDryRun.ContactEvents.MergeSeconds);
+                    if (!objectFates.TryGetValue(state, out int[]? f)) objectFates[state] = f = new int[3];
+                    f[0]++;
+                    f[1] += physicsLater;
+                    f[2] += modelLater;
+                    if (rows) Console.WriteLine(FormattableString.Invariant($"    object {o} {name}: {state} (moved {moved * 100:0.0} cm, tilted {tilt:0} deg after its first touch); later contact events: physics {physicsLater}, the model {modelLater}"));
+                }
+
                 foreach ((double t, int o, bool acc) in modelOnsets)
                     match[acc ? 1 : 0, physicsOnsets.Any(x => x.Object == o && Math.Abs(x.T - t) <= MatchSeconds) ? 0 : 1]++;
                 foreach ((double t, int o, bool acc) in physicsOnsets)
@@ -424,6 +467,8 @@ namespace Teleop.Eval.JointDrive
             Console.WriteLine(FormattableString.Invariant($"  as contact events (a re-touch within {MixedDryRun.ContactEvents.MergeSeconds:0.0} s of the object's last release is the same contact): the model {byModelEvents.Describe()}"));
             Console.WriteLine(FormattableString.Invariant($"    physics {physEvents.Describe()}"));
             Console.WriteLine(FormattableString.Invariant($"    the model with the objects where physics had them at each moment: {byMovingEvents.Describe()}"));
+            Console.WriteLine("  objects physics touched, by what became of them after the first touch (objects: later contact events by physics / by the model): " +
+                              string.Join(", ", objectFates.OrderBy(k => k.Key, StringComparer.Ordinal).Select(k => FormattableString.Invariant($"{k.Key} {k.Value[0]}: {k.Value[1]} / {k.Value[2]}"))));
             Console.WriteLine("  the measured tool point's height less the follower's, mm: " + MixedDryRun.Percentiles(toolBias, "0.0") + FormattableString.Invariant($"; mean {(toolBias.Count == 0 ? 0 : toolBias.Average()):0.0}") +
                               "; joints' mean measured less followed, rad: " + string.Join(", ", jointBias.Select(b => (b.Count == 0 ? 0 : b.Average()).ToString("0.000", CultureInfo.InvariantCulture))));
             Console.WriteLine(FormattableString.Invariant(

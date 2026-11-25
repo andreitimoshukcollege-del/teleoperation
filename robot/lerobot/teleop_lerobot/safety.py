@@ -714,6 +714,9 @@ def build_streams(writer, out: str, takes: Sequence[Take], parts: int = 1, log=p
             raise ValueError("a --views build needs every take to have the same cameras and sizes (LeRobot's features are one "
                              "set a dataset); found " + "; ".join(f"{[f'{n} {w}x{h}' for n, w, h in k]} in {len(v)} take(s), "
                                                                   f"e.g. {v[0]}" for k, v in sets.items()))
+    if options.depth_masks and any(t.source != "isaac" for t in takes):  # only the twin records depth and masks
+        raise ValueError("--depth-masks needs takes of the twin (isaac.jlog, depth and mask streams); "
+                         + next(t.path for t in takes if t.source != "isaac") + " is not one")
     bases = stream_roots(out, [name for name, _, _ in groups])
     there = [r for r in stream_roots(out, [name for name, _, _ in groups], parts) if os.path.exists(r)]
     if there:

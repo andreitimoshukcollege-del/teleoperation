@@ -260,13 +260,18 @@ def test_the_table_projected_through_each_recorded_pose_lands_on_its_id_and_a_wr
     assert result["problems"] and all(p.startswith("view1:") for p in result["problems"])
 
 
-def test_a_views_build_refuses_takes_whose_cameras_differ(scenarios, tmp_path):
+def test_a_build_refuses_takes_whose_cameras_differ_or_that_record_no_depth(scenarios, tmp_path):
     a = read_take(views_take(scenarios), views=True)
     b = read_take(views_take(scenarios, name="20261125T100100Z-take002", at_s=10), views=True)
     b.cameras = b.cameras[:3]
     with pytest.raises(ValueError, match="same cameras and sizes"):
         safety.build_streams(Writer(), str(tmp_path / "x"), [a, b], log=lambda m: None, options=ON)
     assert not os.path.exists(str(tmp_path / "x"))
+    real = read_take(jetrover_take(scenarios, name="20261125T100200Z-take003", source="robot", at_s=20))
+    with pytest.raises(ValueError, match="--depth-masks needs takes of the twin"):
+        safety.build_streams(Writer(), str(tmp_path / "y"), [real], log=lambda m: None,
+                             options=sidecars.Options(depth_masks=(16, 9)))
+    assert not os.path.exists(str(tmp_path / "y"))
 
 
 def test_the_npz_is_written_the_same_twice_and_numpy_reads_it(tmp_path):

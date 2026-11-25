@@ -2145,7 +2145,7 @@ one frame earlier and one frame later.
   - every 45° of azimuth is used, behind the robot least (9 of 200 views in 180-225°, against 47 in 315-360°), which is
     the robot's body and arm sphere at work.
   - The fastest a moving view's camera travels: a few mm a frame (3 mm at its fastest for a 1.37 m view in the tests).
-- **Tests.** `robot/isaac/tests/test_views.py` (38 cases) and `test_views_check.py` (5: a take ray-cast here passes, a moving
+- **Tests.** `robot/isaac/tests/test_views.py` (54 cases) and `test_views_check.py` (5: a take ray-cast here passes, a moving
   view rendered one frame off its `VP` is caught, a missing `VP` or a `VW` that is not the draw fails, a take without views
   fails, the sheet is written).
   - `scripts/gpu/gate.sh isaac lerobot` on de151a3: isaac 314 passed and 8 skipped (the pxr cases); lerobot 143 passed.

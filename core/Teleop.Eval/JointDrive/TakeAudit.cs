@@ -64,7 +64,7 @@ namespace Teleop.Eval.JointDrive
             // The dry run's contacts on the recorded commands (docs/adr/0038 "M, motion", round 7 on the twin): the follower of the take's own
             // commands against the objects where they stood as it began, counted as the dry run counts them (MixedDryRun.LagAwareContacts), and
             // matched onset by onset to physics: the same object within MatchSeconds.
-            var model = new ContactTally();
+            var byModel = new ContactTally();
             var phys = new ContactTally();
             var match = new int[2, 3]; // [other, accident] x [both, only the model, only physics]
             int physicsMerged = 0;
@@ -268,7 +268,7 @@ namespace Teleop.Eval.JointDrive
                         {
                             bool acc = moves.Any(m => IsAccident(m.Kind) && s.T >= m.Start && s.T <= m.End + lag);
                             modelOnsets.Add((s.T, reach[i].Id, acc));
-                            model.Add(acc, arm.Tool.Z, link == ArmLink.Gripper ? "gripper" : link == ArmLink.Wrist ? "wrist" : link.ToString().ToLowerInvariant());
+                            byModel.Add(acc, arm.Tool.Z, link == ArmLink.Gripper ? "gripper" : link == ArmLink.Wrist ? "wrist" : link.ToString().ToLowerInvariant());
                             if (rows) Console.WriteLine(FormattableString.Invariant($"    model contact {reach[i].Id} at {s.T - t0:0.00} s by {link.ToString().ToLowerInvariant()}{(acc ? ", in an accident" : "")}; tool z {arm.Tool.Z * 100:0.0} cm"));
                         }
 
@@ -357,7 +357,7 @@ namespace Teleop.Eval.JointDrive
             Console.WriteLine("  their tool point (measured), cm from the base frame: 5 cm bins from -20: " + MixedDryRun.Histogram(onsetTool.Select(z => z * 100.0), -20, 5, 8) +
                               "; p10/p50/p90 " + MixedDryRun.Percentiles(onsetTool.Select(z => z * 100.0).ToList(), "0.0"));
             Console.WriteLine("  touching links: " + string.Join(", ", onsetLink.OrderByDescending(k => k.Value).Select(k => k.Key + " " + k.Value)));
-            Console.WriteLine(FormattableString.Invariant($"  the dry run's contacts on the recorded commands (the follower, the objects as each take began): {model.Describe()}"));
+            Console.WriteLine(FormattableString.Invariant($"  the dry run's contacts on the recorded commands (the follower, the objects as each take began): {byModel.Describe()}"));
             Console.WriteLine(FormattableString.Invariant($"  physics, counted the same way: {phys.Describe()}; re-touches of the same object within {MergeSeconds:0.0} s of its last onset {physicsMerged}"));
             Console.WriteLine(FormattableString.Invariant(
                 $"  onsets matched (the same object within {MatchSeconds:0.0} s): outside accidents both {match[0, 0]}, only the model {match[0, 1]}, only physics {match[0, 2]}; in an accident's span both {match[1, 0]}, only the model {match[1, 1]}, only physics {match[1, 2]}"));

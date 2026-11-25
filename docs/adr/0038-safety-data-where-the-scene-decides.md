@@ -2398,3 +2398,150 @@ available.
   - six bad fixed slots are refused;
   - the count guard, and the sight.
 - **Gates** on 3174b00 (`scripts/gpu/gate.sh isaac lerobot`): isaac 325 passed and 8 skipped; lerobot 143 passed.
+
+**Views in safety batches (2026-11-25).** The world-models collaborator asked for the view cameras to feed their safety
+checks: views in safety batches, at least one on every twin, and a held-out range of viewpoints for test sessions.
+- **Static views only.** The real cameras are mounted, so a moving view adds nothing there. It would also break replay pairs:
+  a replay keeps its source's look by sharing its change, and a moving view's loop is timed from that change's frame, so a
+  replay that starts later would see another phase of the loop.
+- **`robot/isaac/views/safety.json`:**
+  - one camera (`count` 1), 640×360, `hfovDeg` 60-90, static: the spec has no `moving` section;
+  - the same look-at box, rejection rules, records and JPEG quality as `recon.json` (a test compares them);
+  - the training side of the held-out region below.
+- **`robot/isaac/views/safety-holdout.json`:** the same spec, drawing only inside the region, for test sessions.
+- **Reconstruction keeps `recon`**, moving views and all.
+
+**A replay gets exactly its source's views.** How it holds:
+- While `.keep-look` stands, `renderer.keep_look` skips the change after the source closes. The replay's `BK` therefore has
+  the source's seed and change.
+- In the renderer, `views_now` and `view_change` (the drawn views, their loop's start frame and their metered gains) change only
+  in `apply_views` and `settle_room`, and both run only in `_change_backdrop`. So the replay's preamble repeats the source's
+  `VS` and `VW`, gains included.
+- `views.draw` is a pure function of the spec, the scene, the seed, the change and the camera index. Its keys are strings,
+  which `random.Random` hashes with sha512, so another process and another `PYTHONHASHSEED` draw the same. That is what lets
+  `views_check.py` recompute the draws.
+
+Pinned in `test_views.py`:
+- the safety spec's draws are all static, at any count;
+- a replay's `VS`/`VW` lines equal its source's, with a fresh spec, scene and geometry and other changes drawn in between,
+  while the next change's do not;
+- the same lines come out of a subprocess under two hash seeds;
+- an AST test of `renderer.py` pins where the views are drawn and metered, and that `on_closed` returns before asking for a
+  change while `keep_look` holds.
+
+`views_check.py` now pairs takes by `RP` and requires each replay's `BK` seed and change, `VS` and `VW` to equal its
+source's (`test_views_check.py`: one replay identical; one after a new change and one re-metered, both caught).
+A twin restarted between a source and its replays draws a new seed, so the look and the views both differ; the check reports
+it.
+
+**Every twin gets its view.**
+- `just isaac-twins-up <n> <scene> <views> <views_count>` passes the views to every twin it starts. A twin already running is
+  left alone, with a warning when its renderer records other view cameras.
+- `just isaac-safety-batch ... <scene> <views> <views_count>` and `isaac-safety-batch-twins` (which passes them to each twin's
+  batch) do not start twins. They read the running renderer's `--views`/`--views-count` from its command line and refuse a twin
+  whose views differ from the ones asked for.
+- The default is `none`, as before. With `none`, a batch only notes a twin that records views.
+- **The setting for safety batches is `safety`: one view on each twin, not two on one twin.**
+
+  ```
+  just isaac-twins-up 2 jetrover-mixed safety
+  just isaac-safety-batch-twins <takes> <seed> 2 mixed true 1-3 <replays> jetrover-mixed safety
+  ```
+  Held-out test sessions use `safety-holdout` in both commands instead.
+
+**Cost, estimated, not measured.**
+- From the figures above: a 640×360 view costs about what a scene camera does, about 4 ms of GPU per frame per twin, about 4%
+  of the GPU per twin.
+- With two twins at 63-80% busy, one view each should take it to about 70-88%.
+- On the CPU, about a third more encoding per frame, now spread over the encode pool.
+- Disk: about 3.3 GB an hour per twin more.
+- The fps check (below) decides.
+
+**The held-out region.** A spec may declare `heldOut` (`azimuthDeg` and `elevationDeg` ranges) with its `split`.
+- **`train`:** a candidate whose drawn azimuth and elevation fall in the region is drawn again. The redraw happens before the
+  rules run, so not even a fallback lands in the region.
+- **`test`:** the spec's own `azimuthDeg` and `elevationDeg` must lie inside the region (checked when it is read).
+- **The region is one of viewing directions.** The drawn azimuth and elevation are exactly the direction of the camera's line
+  of sight (a test checks it against `View.sight`). Roll turns about that line. So no training view looks along a held-out
+  direction. The camera's position is another matter: the look-at point is drawn in a box, so a held-out camera can stand
+  near a place a training camera once stood, looking another way.
+- **Refused when read:**
+  - a region without a split, or a split without a region;
+  - a region that is empty or spans more than 360°;
+  - a train spec whose region covers more than 90% of its directions;
+  - fixed slots, or a `moving` share above 0, alongside a region (a loop could cross the region's edge).
+- **The shipped region:** azimuth 60-120°, the robot's left side (+y), at every elevation (−10 to 89°).
+  - `safety.json` draws all round outside it.
+  - `safety-holdout.json` draws at azimuth 65-115° and elevation 8-80°, 5° in from the region's edges, so that no test
+    direction is within 5° of a training one.
+  - The two files differ only in `notes`, `azimuthDeg` and `split`, and carry one `heldOut` object.
+- **Why that region, over elevation above 60°.** Both give valid views, but:
+  - **Training loses less.** The side sector takes 150 of 1,000 views from the unrestricted safety draw. Elevation above 60°
+    would take 365, since those views pass the rules most often.
+  - **The real cameras' likely places stay in training.** The front-left and front-right tripods are at about ±38°
+    (`fixed-example.json`).
+  - **Side views are informative.** They see the arm's reach toward an object in profile, where the gaps that safety turns
+    on show. They are almost never occluded: 9 `visible` rejections in 2,102. Overhead views foreshorten height above the
+    table.
+  - **The cost:** the mirror sector (240-300°) stays in training. A model trained with left-right flips has seen mirror
+    images of the held-out directions, so turn flips off for a held-out comparison.
+- **How a dataset reader tells the two apart. No record changed.**
+  - A take's `isaac/views.json` holds the spec, with `split` (`train` or `test`) and `heldOut`.
+  - Each view's `VW` draw holds its azimuth and elevation. `views.split_of(spec, azimuth, elevation)` gives `test` inside the
+    region and `train` outside, or "" for a spec without one. `views_check.py` reports it per view and fails a view on the
+    wrong side.
+  - `VS`'s sha256 names the spec exactly: `safety.json` is `2b936a2d...b352` and `safety-holdout.json` is `428cd075...d15d`.
+    Any edit changes it.
+  - `recon` makes no promise: 295 of its 2,000 views in 1,000 takes fall in the region. Keep reconstruction takes out of a
+    safety training set whose test views are held out.
+- **Specs without a region draw byte-identically.** A test hashes the `VW` records of `recon`, `recon-720` (at 2 and 4
+  cameras) and `fixed-example` over 40 seeds, against the hash measured on c3503b9's `views.py`.
+
+**Draws, measured offline** (`robot/isaac/views_stats.py <spec> --takes 1000`, a new pure-Python tool; take n with seed n and
+change n mod 13, on `jetrover-mixed`; `jetrover-bench` and `jetrover-mixed-holdout` draw the same, having the same table and
+bench):
+
+| | `safety.json` (train) | `safety-holdout.json` (test) |
+|---|---|---|
+| views | 1,000, all static | 1,000, all static |
+| fallbacks | 0 | 0 |
+| draws per view: median, p90, p99, max | 2, 5, 9, 13 | 2, 6, 13, 18 |
+| candidates rejected | 1,478 | 2,102 |
+| by rule (one candidate can break several) | cover 858, visible 499, surface 311, in_frame 196, arm 124, ceiling 110, body 4 | cover 1,356, surface 601, in_frame 383, ceiling 137, arm 77, visible 9 |
+| azimuth, 30° bins from 0° | 156, 162, **0, 0**, 70, 43, 46, 72, 57, 89, 153, 152 | 60-90: 488, 90-120: 512 |
+| elevation, 10° bins from 0° to 80° | 10, 91, 103, 109, 137, 174, 176, 200 | 23, 115, 133, 115, 109, 159, 178, 168 |
+| distance, 0.2 m bins from 0.6 m to 2.0 m | 85, 212, 241, 214, 129, 86, 33 | 54, 194, 282, 270, 137, 54, 9 |
+| views in the region | 0 (it covers 1/6 of a uniform draw) | 1,000 |
+| Python per view | 0.5 ms | 0.6 ms |
+
+- Behind the robot (150-210°), training still has its few views: 89 of 1,000.
+- For comparison, a held-out elevation band, test views at 65-80°: draws median 1, p99 7, no fallback. Of its 955 rejections,
+  357 were `ceiling`.
+
+**Tests.** `test_views.py` gained 26 cases (91 in all) and `test_views_check.py` 2 (7 in all):
+- safety specs:
+  - the safety spec and that its draws are static;
+  - the replay sameness (three ways, above);
+  - and the shelf test now covers both safety specs;
+- the held-out region:
+  - the byte-identical draws of the region-less specs;
+  - the shared region;
+  - train draws never in the region and test draws only there, as a reader tells them from `VW`;
+  - test coverage of the region;
+  - a fallback train view stays out;
+  - `split_of`'s edges and a sector across 0°;
+  - 13 bad regions refused, and a zero moving share accepted;
+  - `views_stats.py`.
+
+**The twin check** (the coordinator's, with the user's go):
+1. **The fps.** Two twins with `just isaac-twins-up 2 jetrover-mixed safety`, each beside the other. Read `[render] N fps` and
+   `render`/`read` ms from `just isaac-status`, and the GPU's share. Each must hold about 30 fps.
+2. **A short safety batch** with views on both twins: `takes=1`, `mixed`, `replays=2`, `build=false`. Then
+   `views_check.py <its takes> --sheet /tmp/views-sheet.jpg` on the GPU machine. It passes with:
+   - each replay identical to its source (`"replays": {"pairs": n, "identical": n}`);
+   - every view `static` with split `train`;
+   - table depth under 3 mm at p99;
+   - every frame carrying the view's streams.
+3. **One `safety-holdout` take** passes the same check with split `test`.
+4. **The contact sheet.** The safety views sit all round the table except the robot's left side. The held-out ones sit on that
+   side. Each sees the table, the arm and the objects.

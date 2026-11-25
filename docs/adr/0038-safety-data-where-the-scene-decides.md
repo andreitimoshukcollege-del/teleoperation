@@ -2157,3 +2157,34 @@ one frame earlier and one frame later.
   - the moving views' frame association (lag − 1) on real renders;
   - the encode pool keeping up;
   - the views' masks and exposure.
+
+**Fixed views (2026-11-25).** The user also wants cameras at positions the spec chooses, with random placement still
+available.
+- **A slot may carry `fixed`:** `{"position": [x, y, z], "lookAt": [x, y, z], "hfovDeg": f, "rollDeg": r, "jitter":
+  {"translationM": t, "rotationDeg": d}}`, in the robot's base frame (a USD camera looking at `lookAt` with +z up, rolled
+  `rollDeg`, as `CM`).
+- **How a fixed camera behaves:**
+  - It skips the draw and is always static, with `VW` mode `fixed` and `attempts` 0.
+  - It stands exactly where the spec says, every take, unless the optional jitter is given (default none: up to `t` along
+    each axis, `d` in azimuth, elevation and roll, at most 5 cm and 5°, seeded per take from its own key).
+  - The rules still run on it, but only to warn. The rules it breaks are logged (`[render] warning: fixed view ...`) and
+    recorded in a new last `VW` field, `broken`, and the camera is never moved. `views_check.py` checks that `broken` is what
+    the rules give.
+- **Mixing:** a spec may mix fixed and drawn slots. A drawn view keeps its 15° separation from the fixed views before it.
+  - A spec with a fixed slot refuses a count above its number of slots, since a fixed slot cannot repeat.
+  - The views' sight covers every fixed camera.
+- **`robot/isaac/views/fixed-example.json`:** two fixed 640×360 cameras, 75° wide, front-left and front-right of the table.
+  - They stand at (1.05, ±0.62, 0.30), about 1.1 m from the reach and 0.5 m above the table, looking at (0.26, 0, -0.13).
+  - Both pass every rule.
+  - Run it with `views=fixed-example`.
+- **The example is only an example.** The real cameras' poses relative to the robot's base are not known yet. They are
+  calibrated to each other (docs/adr/0014 amendment 4, branch `real-cameras`, PR #173) but not to the base. Replace the
+  example with the real layout once that base calibration exists.
+- **Tests:** 11 more cases in `test_views.py`:
+  - the example is exact and the same every take, and passes every rule;
+  - a camera in the chassis is kept and warned, with `body` in `VW`;
+  - the jitter is seeded and bounded;
+  - a mixed spec works, with its drawn view kept apart from the fixed one;
+  - six bad fixed slots are refused;
+  - the count guard, and the sight.
+- **Gates** on 3174b00 (`scripts/gpu/gate.sh isaac lerobot`): isaac 325 passed and 8 skipped; lerobot 143 passed.

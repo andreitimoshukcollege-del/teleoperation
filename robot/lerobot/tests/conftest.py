@@ -19,8 +19,8 @@ MS = 1_000_000
 # SESSION_FORMAT.md): what a take's ``at_s`` moves. A record named in neither table cannot be moved, and says so.
 TIMES = {"JC": (1, 2, 4), "RO": (1,), "RI": (1,), "WC": (1, 2), "WO": (1, 2), "WL": (1,), "WZ": (1,), "RP": (1,), "SE": (1,),
          "MV": (1,), "WP": (1,), "WE": (1,), "QS": (1, 2), "AO": (1,), "VF": (1, 3), "VQ": (2,), "EN": (1,), "ER": (1,),
-         "JK": (1,), "HK": (1,)}
-UNTIMED = {"CM", "LK", "MT", "CL", "LT", "CJ", "OA", "SZ", "SC"}
+         "JK": (1,), "HK": (1,), "VP": (2,)}
+UNTIMED = {"CM", "LK", "MT", "CL", "LT", "CJ", "OA", "SZ", "SC", "VS", "VW"}
 
 
 def moved(row, ns):
@@ -77,12 +77,14 @@ def session_json(take, fmt, version, source, scenario="reach", description="reac
 
 
 def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{cam}-{n}".encode(), extra=(), vq=None, cm=None,
-               shift=0):
+               shift=0, views=()):
     """``vfs``: (t ns, frame, stateSensed, flags). Every camera's rgb, one record per frame. ``extra``: more rows (``[tag,
     ...]``) after the cameras'; ``vq(n, sensed)``: frame n's posed joints ({joint: value}), written as a ``VQ`` before its
     ``VF``; ``cm(camera)``: that camera's ``CM`` row instead of the default. ``shift``: every time written that many ns later
-    (``vq`` is given the frame's time before it)."""
+    (``vq`` is given the frame's time before it). ``views``: view cameras (docs/adr/0038 "V, views"), no ``CM`` row: each
+    frame also carries their rgb, depth and mask parts and a ``VP`` with their poses, as the renderer writes them."""
     sidecars = {c: Sidecar(os.path.join(take, folder, c + ".rgb.frames")) for c in cameras}
+    view_sidecars = {f"{v}.{st}": Sidecar(os.path.join(take, folder, f"{v}.{st}.frames")) for v in views for st in ("rgb", "depth", "mask")}
     rows = [(cm(c) if cm else None) or ["CM", c, 64, 48, 1, 1, 32, 24, 0.01, 6, 0, 0, 0, 1, 0, 0, 0, "", "rgb;depth;mask", "base"]
             for c in cameras]
     rows.extend(moved(r, shift) for r in extra)
@@ -91,10 +93,15 @@ def frames_log(take, writer, folder, sid, cameras, vfs, image=lambda cam, n: f"{
         for c in cameras:
             off, length = sidecars[c].add(image(c, n))
             parts.append(f"{c}.rgb:{off}:{length}")
+        for name, sc in view_sidecars.items():
+            off, length = sc.add(f"{name}-{n}".encode())
+            parts.append(f"{name}:{off}:{length}")
         if vq is not None:
             rows.append(moved(["VQ", n, sensed, ";".join(f"{k}:{v}" for k, v in sorted(vq(n, sensed).items()))], shift))
+        if views:
+            rows.append(moved(["VP", n, sensed, ";".join(f"{v}:1.0:{0.1 * n!r}:0.8:1.0:0.0:0.0:0.0" for v in views)], shift))
         rows.append(moved(["VF", t, n, sensed, flags, ";".join(parts)], shift))
-    for s in sidecars.values():
+    for s in list(sidecars.values()) + list(view_sidecars.values()):
         s.close()
     write_jlog(os.path.join(take, writer + ".jlog"), writer, sid, rows)
 
@@ -113,7 +120,7 @@ def relay_pulse(motor, value):
 
 def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", source="isaac", gap=None, image=None,
                   cameras=("third-left", "wrist"), extra=(), jitter=0.0, isaac_extra=(), vq=None, cm=None, scene=None,
-                  session=None, dropped=0, at_s=0.0, commands=None, relay=relay_pulse, host_check=None):
+                  session=None, dropped=0, at_s=0.0, commands=None, relay=relay_pulse, host_check=None, views=()):
     """A JetRover take: commands accepted from 1.0 to 3.0 s, RO and RI every 20 ms, frames at 30 fps from 0.5 to
     3.5 s (the first two with B). ``gap``: (from, to) seconds with no frame recorded. ``extra``: more robothost.jlog rows
     (``[tag, t, ...]``), such as contacts (WC) and object poses (WO). ``jitter``: each frame's time wobbles by up to that
@@ -182,7 +189,7 @@ def jetrover_take(root, name="20261112T100000Z-take001", scenario="reach", sourc
     folder = "camera" if source == "robot" else "isaac"
     frames_log(take, "camera" if source == "robot" else "isaac", folder, sid,
                ["front"] if source == "robot" else list(cameras), vfs,
-               **({"image": image} if image else {}), extra=isaac_extra, vq=vq, cm=cm, shift=shift)
+               **({"image": image} if image else {}), extra=isaac_extra, vq=vq, cm=cm, shift=shift, views=views)
     finish(take)
     return take
 

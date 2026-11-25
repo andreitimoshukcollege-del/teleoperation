@@ -2597,3 +2597,71 @@ and for depth and masks in the datasets they read. Both are `safety-build` optio
   take's; the projection check passes and catches a view rendered 3 cm off its recorded pose; mismatched cameras are refused;
   the `.npz` is deterministic; visibility has rows for a static view (equal to the camera it copies) and a moving one (out of
   its frustum where its `VP` moves it away).
+
+**A new view for every source take (2026-11-25, branch `views-fix`; found by the views pilot).** The collaborator wants a new
+random view for every source take, each replay keeping its source's view. The second half held in the pilot: 23 of 23 replay
+pairs were identical. The first did not: each twin gave 1-3 viewpoints over the whole set.
+- **What was wrong.** The look and the views change only at a change, and the renderer asked for a change only when a
+  session closed without `.keep-look` beside the control file.
+  - The batch makes the file while a mixed take records (`keep-look: on`). It removes it while the last replay asked for
+    records (`keep-look: off`), so that replay's close brings the change.
+  - But the replays end at the first that fails, and a replay is often refused or fails before it records. Then the group's
+    last recorded take closed with the file still there, and no take closed after the file went. The next source take opened
+    with the group's change: its look and its views.
+  - The pilot's own records show it:
+    - Twin 0's groups 95100001 and 97100001-97200002 (each asked for 2 replays and recorded 2, 2, 1, 1, 1, 2 and 0) showed
+      changes 0, 1, 2, 2, 2, 2, 3.
+    - Twin 1 stayed at change 0 for 5 groups, and 8 kept takes, across its two batches, since a batch's own removal of a
+      stale file at its start closes no session either.
+  - The draws themselves were right. Each take's `VW` was `views.draw` of its `BK` seed and change.
+- **The fix** (`renderer.LookGroup`). The renderer still decides at each close: keep while the file is there, else change.
+  The render loop also releases a kept look, once, when the file has gone with no session open in the writer and none named
+  in the control file. That is a group whose replays ended early, and the release changes before the next source take.
+  - It never fires while a session is open or opening. So a last replay whose `keep-look: off` reaches the twin before its
+    writer has polled still gets its source's look.
+  - The check never waits on the writer's lock, and costs a file test per frame only while a look is kept.
+  - `KEEP_LOOK_MAX` still bounds a file left behind.
+- **Why the change, not the views' key.** The renderer does not see a take's seed or its `RP` (they are RobotHost's), and the
+  rest of the look (room, materials, clutter, backdrop) had the same fault. Fixing the change fixes both, and `views.draw`
+  stays as it was, a pure function of the spec, the scene, `BK`'s seed, the change and the camera index.
+- **What stays the same.**
+  - Every spec draws the same views for a given seed and change: `views.draw` is untouched, and the region-less hash test
+    passes unchanged.
+  - The same change sequence where every group records all its replays, and in batches without replays. Only a group that
+    ended early now hands the next source take a new change.
+  - The held-out split rules, the records and SESSION_FORMAT.md.
+- **`views_check.py`** now reports `viewpoints` per twin (the takes root): its takes, its replay groups (a take outside a
+  group counts as one) and its distinct viewpoints. A viewpoint is every view camera's `VW` size, intrinsics and pose.
+  - It fails two groups sharing a viewpoint when the spec draws a new view each change (a drawn slot, or a fixed one with
+    jitter), and reports `groups_sharing_a_view`.
+  - Fixed views without jitter are counted, not failed.
+  - On the pilot's takes it would fail; on takes after the fix, viewpoints should equal groups.
+- **Tests.**
+  - `test_renderer.py`: `test_a_kept_look_is_released_between_sessions_once_its_keep_file_goes_and_never_while_a_session_is_open`.
+  - `test_view_groups.py` (new) drives `LookGroup` as a batch does, take by take, with the keep file made and removed as on
+    the twin:
+    - `test_the_pilots_shared_views_came_from_groups_whose_replays_ended_early`: the old logic reproduces twin 0's 0, 1, 2,
+      2, 2, 2, 3;
+    - `test_every_source_take_gets_a_new_change_and_its_replays_keep_it`;
+    - `test_a_batch_whose_groups_all_record_every_replay_changes_exactly_as_before`;
+    - `test_a_new_draw_per_source_take_and_the_same_draw_within_its_replay_group` (the safety spec on the pilot's plan);
+    - `test_recon_views_are_also_per_group`;
+    - `test_the_per_group_draws_are_the_same_in_another_process_whatever_its_hash_seed`.
+  - `test_views_check.py`: `test_each_replay_group_has_a_view_of_its_own_and_two_groups_sharing_one_are_caught`,
+    `test_main_fails_a_set_whose_groups_share_a_view`.
+  - `test_views.py`'s AST test now pins that a change is asked for only through `LookGroup` (`closed`, `released`).
+- **The build's options.** `just isaac-safety-build` used to set `SAFETY_BUILD_ARGS` to its own `--caption`/`--split`. So
+  `SAFETY_BUILD_ARGS="--views --depth-masks 160x90"` was dropped without a word, and so it was through
+  `isaac-safety-batch-twins` with `build=true`.
+  - The caller's options now follow the recipe's own. Of an option given twice, the last wins.
+  - `isaac-safety-build`, `isaac-safety-batch` and `isaac-safety-batch-twins` take a last `build_args` argument. Just exports
+    it rather than pasting it into the script, and it is checked against the same characters before anything runs.
+  - A views batch end to end:
+    `just isaac-safety-batch-twins <takes> <seed> 2 mixed true 1-3 <replays> jetrover-mixed safety -1 "--views --depth-masks 160x90"`.
+  - From a local shell, quote `out` as `'~/scratch/...'`.
+- **Not run on the twin yet.** The twins must restart at this commit, since the renderer changed. The check: a short
+  `mixed` batch with `replays=2` and views `safety` on both twins, then `views_check.py` over its takes. It passes with:
+  - every pair identical;
+  - `groups_sharing_a_view` 0;
+  - each twin's `viewpoints` equal to its `groups`;
+  - the renderer log's `.keep-look is gone with no session open` lines matching the groups that ended early.

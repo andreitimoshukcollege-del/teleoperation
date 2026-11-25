@@ -4196,7 +4196,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     )
     kept=() setaside=0 unplanned=0 consecutive=0 n=0 unchecked=0 paused=0
     # A mixed take and its replays are 1 + replays takes (docs/adr/0038 decision 2).
-    started=$(date +%s) total=$(( {{takes}} * ($(echo "$cats" | tr ',' '\n' | wc -l) + {{replays}} * $(echo ",$cats," | grep -c ',mixed,')) ))
+    started=$(date +%s) total=$(( {{takes}} * ($(echo "$cats" | tr ',' '\n' | wc -l) + {{replays}} * $(echo ",$cats," | grep -c ',mixed,' || true)) ))
     # Whether twin N's bridge and renderer still run (counted by the record control file they name).
     alive_sh=$(cat <<'REMOTE'
     {{isaac_twin_sh}}

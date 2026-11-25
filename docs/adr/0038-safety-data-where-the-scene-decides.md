@@ -2635,7 +2635,11 @@ pairs were identical. The first did not: each twin gave 1-3 viewpoints over the 
   - It fails two groups sharing a viewpoint when the spec draws a new view each change (a drawn slot, or a fixed one with
     jitter), and reports `groups_sharing_a_view`.
   - Fixed views without jitter are counted, not failed.
-  - On the pilot's takes it would fail; on takes after the fix, viewpoints should equal groups.
+  - On every `safety.json` take on the GPU machine (65, kept and set aside, read at `3b37003`), it fails:
+    - twin 0 has 23 groups and 19 viewpoints, twin 1 has 17 groups and 10 viewpoints;
+    - 15 groups fall in 4 shared sets;
+    - the replay pairs are 25 of 25 identical.
+  - On takes after the fix, viewpoints should equal groups.
 - **Tests.**
   - `test_renderer.py`: `test_a_kept_look_is_released_between_sessions_once_its_keep_file_goes_and_never_while_a_session_is_open`.
   - `test_view_groups.py` (new) drives `LookGroup` as a batch does, take by take, with the keep file made and removed as on

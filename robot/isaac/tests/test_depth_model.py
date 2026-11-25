@@ -425,3 +425,22 @@ def test_the_statistics_see_the_models_edges(spec):
     V = depth_stats.lag_variances(np.random.default_rng(0).normal(size=(300, 300)), np.ones((300, 300), bool))
     fit = depth_stats.noise_from_lags(V)
     assert fit["sigmaMm"] == pytest.approx(math.sqrt(1 - 1 / 12), rel=0.05) and abs(fit["rho"][1]) < 0.05
+
+
+def test_a_modelled_table_lands_back_on_the_table_through_the_pose(spec):
+    """End to end: a table top at z -0.196 ray-cast in the render pinhole from a camera at the twin's third-left place,
+    resampled onto the raw grid, modelled, and carried back through the pose and the raw rays to the base frame, lies at
+    the table's height (the conventions of the render, the raw grid, the USD pose and depth_stats agree)."""
+    import depth_stats
+
+    s = constant(spec, rho=0.6)
+    g = dm.geometry(s.mode)
+    pos, target = (0.88, 0.51, 0.32), (0.08, 0.0, 0.07)
+    intr = {"fx": g.render_f, "fy": g.render_f, "cx": g.render_width / 2, "cy": g.render_height / 2}
+    z, _ = depth_stats.synthetic_depth(intr, (g.render_height, g.render_width), pos, target, table_z=-0.196)
+    d = dm.finish(dm.Job(s, frame(s), z, None, raw=True))
+    pose = (*pos, *renderer.look_at(pos, target))
+    got = depth_stats.plane_in_base(d, (g.x, g.y), pose)
+    assert got["points"] > 100000 and got["medianZ"] == pytest.approx(-0.196, abs=0.004) and got["p99AbsMm"] < 15
+    lit = depth_stats.lit_polygon(d > 0, (g.x, g.y))
+    assert 5 <= len(lit) <= 12 and min(p[1] for p in lit) < -0.5

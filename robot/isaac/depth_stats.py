@@ -237,9 +237,47 @@ def summarise(frames: Sequence, intr: Optional[Mapping] = None, still: bool = Fa
                 lags[k].append(v)
         V = {k: float(np.mean(v)) for k, v in lags.items()}
         out["planeNoise"] = {"V": {k: round(v, 4) for k, v in V.items()}, "fit": noise_from_lags(V)}
+    if rays is not None:
+        out["litPolygonTan"] = lit_polygon(lit, rays)
     if still and len(stack) >= 10:
         out["temporalNoise"] = temporal_noise(stack)
     return out
+
+
+def lit_polygon(lit, rays, tolerance_px: float = 3.0) -> List[List[float]]:
+    """The convex outline of the pixels valid in any frame, in undistorted normalised coordinates: the model file's
+    ``illumination.polygonTan`` (a real recording's, through its calibration's rays)."""
+    import cv2
+    import numpy as np
+
+    m = cv2.morphologyEx(np.asarray(lit, np.uint8), cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return []
+    poly = cv2.approxPolyDP(cv2.convexHull(max(cnts, key=cv2.contourArea)), tolerance_px, True).reshape(-1, 2)
+    x, y = rays
+    return [[round(float(x[v, u]), 4), round(float(y[v, u]), 4)] for u, v in poly]
+
+
+def plane_in_base(depth_mm, rays, pose: Sequence[float]) -> Optional[Dict]:
+    """The dominant plane of a modelled frame carried into the robot's base frame through its FM pose (a USD camera:
+    -z forward, +y up): its points' median height and spread, to hold against the scene's table top."""
+    import numpy as np
+
+    got = plane_residual(depth_mm, None, rays=rays)
+    if got is None:
+        return None
+    _, inl, _, _ = got
+    d = np.asarray(depth_mm, np.float64) / 1000.0
+    x, y = (np.asarray(r, np.float64) for r in rays)
+    pc = np.stack([x[inl] * d[inl], -y[inl] * d[inl], -d[inl]], 1)  # OpenCV -> USD camera frame
+    w, qx, qy, qz = pose[3:7]
+    r = np.array([[1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - w * qz), 2 * (qx * qz + w * qy)],
+                  [2 * (qx * qy + w * qz), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - w * qx)],
+                  [2 * (qx * qz - w * qy), 2 * (qy * qz + w * qx), 1 - 2 * (qx * qx + qy * qy)]])
+    z = (pc @ r.T + np.asarray(pose[:3], float))[:, 2]
+    med = float(np.median(z))
+    return {"medianZ": round(med, 4), "p99AbsMm": round(float(np.percentile(np.abs(z - med), 99)) * 1000, 2), "points": int(len(z))}
 
 
 # --- reading ---------------------------------------------------------------------------------------------------------------
@@ -266,7 +304,8 @@ def read_take_stream(take: str, camera: str, stream: str, limit: int = 0, writer
         for line in f:
             r = line.rstrip("\n").split("|")
             if r[0] == "FM" and r[1] == camera and r[2] == stream and intr is None:
-                intr = {"width": int(r[4]), "height": int(r[5]), "fx": float(r[6]), "fy": float(r[7]), "cx": float(r[8]), "cy": float(r[9])}
+                intr = {"width": int(r[4]), "height": int(r[5]), "fx": float(r[6]), "fy": float(r[7]), "cx": float(r[8]), "cy": float(r[9]),
+                        "pose": [float(v) for v in r[14:21]], "poseFrame": r[21]}
             elif r[0] == "CM" and r[1] == camera and intr is None and stream == "depth":
                 intr = {"width": int(r[2]), "height": int(r[3]), "fx": float(r[4]), "fy": float(r[5]), "cx": float(r[6]), "cy": float(r[7])}
             elif r[0] == "VF":
@@ -405,6 +444,8 @@ def main(argv=None) -> int:
         print("error: no frames", file=sys.stderr)
         return 1
     out = summarise(frames, intr, args.still, rays)
+    if args.take and rays is not None and intr and intr.get("poseFrame") == "base":
+        out["planeInBase"] = [plane_in_base(f, rays, intr["pose"]) for f in frames[:: max(1, len(frames) // 8)]]
     text = json.dumps(out, indent=1)
     if args.out:
         with open(args.out, "w", encoding="utf-8") as f:

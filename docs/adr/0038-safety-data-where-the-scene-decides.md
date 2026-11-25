@@ -1119,6 +1119,78 @@ still `cmp` equal).
   fewer find no plan. Aims are told from free moves slightly less well (0.700 against 0.710 in the main part).
 - **Not run on the twin.** The twin check is the motion section's above, on this branch.
 
+**Round 7 on the twin: why the dry run's accident contacts looked lost in physics (2026-11-25, branch `r7-physics` from `v2-views`
+e766b23).** Two pilots missed round 7's asks as first reported: accidents 13% / 52% of the contacts on `jetrover-mixed` / held out
+(round-7 pilot, 6813dc3, 39 takes) and 9.6% / 4.4% (views pilot, e766b23, 46 takes), the largest 5 cm band up to 57%, against the dry
+run's 39-43% and 24-29%. Read back with `joint-drive --dry-run --audit-take` (`TakeAudit`, extended here), the gap has four causes and
+one measuring error, and the planner itself meets the accident ask.
+
+- **The 9.6% / 4.4% were a script's error.** The analysis script took `MV` field 7 (`gapMm`) for the accident's start, so every
+  accident off an aim had no span. Read right (`startS`, field 8) the views pilot's onsets were 26% and 24% from accidents.
+- **Counting.** Physics breaks one push into several touches (the object gives, the arm presses on: 17 onsets in one take), and the
+  model, whose arm passes through an object, counts one going in and another coming out. Counted as contact events (a touch of an
+  object within 0.5 s of the end of the last one is the same contact, `MixedDryRun.ContactEvents`), physics gave 99 events over the
+  four pilot sets (85 takes), 32 of them in an accident's span (32%); per set 29%, 33%, 17%, 52% (20-31 events each).
+- **Tippy objects fall at the first touch.** 28 of the 65 objects physics touched tipped (the dowel, the slat, the cans, the marker).
+  After that first touch the model, which keeps every object where it stood, gave them 40 more contact events; physics gave 10, low,
+  with the object lying. Those were the model's higher contacts and many of its accident contacts (held out, 11 accident events by the
+  model on the takes' own commands, 3 with the objects where physics had them).
+- **The twin's arm sags.** Its measured tool point is 9 mm below the follower's (p50, both pilots; shoulder -0.016 to -0.023 rad,
+  elbow -0.013 rad on average). The follower now adds that (`TakeAudit.FollowSag`, `--follow-sag`): the mean bias goes to -1.3 / +0.7 mm
+  on the views pilot and 0.0 / +2.3 mm on the round-7 pilot it was not fitted on, the rms largest-joint error p50 from 0.032 / 0.035 to
+  0.026 / 0.030 rad, and per accident the follower against physics from 12 both / 5 only the model / 2 only physics / 114 neither to
+  14 / 4 / 0 / 115 (views pilot).
+- **Small sets.** A pilot of 8 sources and their replays gives 20-30 contact events. Resampling the dry run's takes, 8 source takes put
+  the accident share anywhere from 10% to 60% (p10-p90) and some band over 40% in about half the draws; 60 source takes give 28-44% and
+  1% (train) / 19% (held out).
+- **Which kinds** (accidents with a physics contact in their span, of those recorded): slip 8 of 42, wrong way 7 of 70, jerk 6 of 51,
+  overshoot 5 of 53, rush 1 of 52 (a rush took the command into an object twice: it ends at its move's target, on an aim at the aim's
+  offset, and few were placed near objects);
+  RobotHost clamped commands in 43 of 268 accident spans (`JC` `C`, paths into the table or the arm), never an accident's way into an
+  object. Lag: 0.17-0.19 s on every take.
+
+**Physics-like contacts in the dry run.** The dry run's lag-aware contacts now also count as physics does (`MixedDryRun.PhysicsLike`):
+contact events, on the sagging follower, and a tippy movable object knocked over at its first contact, lying where it fell after
+(`MixedDryRun.Fallen`: on its narrow side, out along its bearing). On the pilots' own commands it gives 87 events, 31% in accidents,
+largest band 34%, against physics' 99, 32% and 37% (per set 23/28/21/58% against 29/33/17/52%). The dry run also prints which objects
+fill the largest band and the spread a pilot of 8, 20 or 60 source takes would show.
+
+**Measured** (layouts 1-200, seed 1, 3.8 rad/s, 15 s; Release on the GPU machine). "Before" is e766b23's planner (this branch with the
+follower unsagged reproduces its lag-aware line row for row: 358 / 346 onsets, 39% / 43%); "after" is this branch's defaults: the
+planner unchanged, the follower sagged.
+
+| | Train, before | Train, after | Held out, before | Held out, after |
+|---|---|---|---|---|
+| Layouts planned; plan time p50 / p90 s | 192; 0.10 / 0.28 | 192; 0.09 / 0.24 | 195; 0.09 / 0.28 | 195; 0.08 / 0.26 |
+| Take length p50 / p90 s | 17.2 / 19.3 | 17.2 / 19.3 | 17.3 / 19.3 | 17.3 / 19.3 |
+| Lag-aware onsets, in an accident's span | 358, 39% | 389, 39% | 346, 43% | 374, 42% |
+| Contact events, in an accident's span | | 319, 39% | | 316, 41% |
+| Physics-like events, in an accident's span | 261, 34% | 278, 36% | 269, 39% | 289, 38% |
+| Physics-like tool point, 5 cm bins from -20 | 19 61 59 64 31 16 10 1 | 37 56 70 66 24 14 10 1 | 27 75 37 46 47 31 3 3 | 29 99 35 53 44 23 3 3 |
+| Largest band (physics-like) | 25% | 25% | 28% | 34% (-15 to -10) |
+| 60 source takes: accident share p10-p90; a band over 40% | 26-42%; 2% | 28-44%; 1% | 31-48%; 4% | 30-48%; 19% |
+| Replays' way back refused (offline, from the plan's end) | 4 of 181 | 3 of 181 | 12 of 178 | 11 of 178 |
+
+- **The accident ask is met by the planner as it is:** about a third in physics over 99 events (32%), and 36-38% physics-like on 200
+  layouts. The sag adds contacts low (the held-out scene's low band from 75 to 99 events: its bowl, bench plank, cans, wood block,
+  square post and slat all present themselves at -15 to -10 cm), so the held-out scene's largest band rises to 34%: under the 40% bar,
+  but a 60-source batch would go over it about one time in five, and physics adds a few low contacts the model lacks (objects lying,
+  pads grazing at 1-2 mm). The held-out height mix differs (above -8 cm 49% against 59%; peak band -15 to -10 against -10 to -5).
+- **Tried and not taken.** Spending a touched tippy object for later aims and accidents placed near objects (`MixedOptions.SpendTouched`,
+  `--spend-touched`, off by default) halves the placed accidents (95 to 41, 118 to 53) and lowers the physics-like share (33%, 35%).
+  More placed accidents (`--accidents 0.12,0.8`) give 44% / 45%, past the ask. Flatter tool bands (22/22/20/18/18%) bring the held-out
+  band to 31% but the train scene's to 30%, the aim-against-free AUC in the main part from 0.700 to 0.716, and two more test layouts
+  of 40 unplanned; left as `--tool-bands` for a batch that wants it.
+- **Replays' way back** (`DrivePlan.TryApproach(..., tucked: true)`, used by a replay's setup move only): when no straight or
+  joint-at-a-time way is clear, by way of the arm tucked up as home holds it (seven tucks), round the base, then down; every leg
+  checked as before. Offline it frees 2 of the 16 refused groups; the twin's refusals were from a measured pose beside an object,
+  which this also tries.
+- **Checked:** `TwinPhysicsTests` (contact events merge within 0.5 s; a tippy object knocked over is met only lying; the follower's
+  sag; with `SpendTouched` no aim at a touched tippy object; the tucked way never refuses what the plain way finds and every leg is
+  clear, and over a grid of walls some are passed only tucked); `AimedAccidentTests` with the sagging follower.
+- **Not run on the twin.** The check: a batch per scene of at least 60 sources, then `--audit-take` over its takes: physics contact
+  events in an accident's span about a third, every band under 40%, and the physics-like line within a few points of physics.
+
 ### C, clearance and contacts
 
 Built 2026-11-22 on `work/v2-contacts`. Checked offline against recorded takes; the table contacts are not yet run on the twin.

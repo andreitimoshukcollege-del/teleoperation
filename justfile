@@ -570,6 +570,7 @@ isaac_version := env_var_or_default("ISAAC_VERSION", "6.2.0.0")
 # build, the uplink control) suffixed -N and its data folders (sessions, takes) -twinN, for N > 0; twin 0 keeps every
 # name and port it had before there were two. twin_pids N PATTERN EXE lists twin N's real processes (python or dotnet,
 # not a shell whose text names them) by the record control file they all take (RobotHost, the bridge, the renderer).
+# twin_views N gives the view cameras twin N's renderer runs with, compared with views_effective SPEC COUNT (docs/adr/0038 V).
 isaac_twin_sh := '''
 twin_names() {
     tsfx=""; tdata=""; [ "$1" = 0 ] || { tsfx="-$1"; tdata="-twin$1"; }
@@ -594,6 +595,26 @@ twin_pids() {
         esac
     done
     return 0
+}
+views_effective() {
+    # View cameras as the renderer takes them (docs/adr/0038 V): "<spec> <count>", the count -1 read from the spec in the twins'
+    # checkout, or "none 0" for none (no spec, or a count of 0).
+    local spec=$1 count=$2
+    if [ -z "$spec" ] || [ "$spec" = none ] || [ "$count" = 0 ]; then echo "none 0"; return 0; fi
+    if [ "$count" = -1 ]; then
+        count=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["count"])' "$HOME/repos/isaac/robot/isaac/views/$spec.json" 2>/dev/null || echo "?")
+    fi
+    if [ "$count" = 0 ]; then echo "none 0"; else echo "$spec $count"; fi
+}
+twin_views() {
+    # The view cameras twin $1's renderer was started with, as views_effective gives them; nothing when no renderer runs.
+    local p a spec count
+    p=$(twin_pids "$1" "teleop_isaac[.]renderer" python | head -1)
+    [ -n "$p" ] || return 0
+    a=$(tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null)
+    spec=$(printf '%s' "$a" | sed -n 's/.*--views views\/\([A-Za-z0-9._-]*\)\.json .*/\1/p')
+    count=$(printf '%s' "$a" | sed -n 's/.*--views-count \(-\{0,1\}[0-9]*\) .*/\1/p')
+    views_effective "${spec:-none}" "${count:--1}"
 }
 '''
 # Where ROBOT OFF parks the arm before its torque goes off (docs/adr/0023 decision 5), passed by
@@ -4069,9 +4090,9 @@ isaac-knock-probe takes="30" seed="1" since="":
     echo "[knock] rows: $out"
     REMOTE
 
-# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category> --events <events>` (a fresh layout, the arm driven relative to where the objects are; each take of the three event categories draws `events` events, a count or a range, default 1-3, anywhere in it, docs/adr/0036 amendment 5), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists (after the take in progress); waits between takes while recordings/.drive/PAUSE exists. Writes its progress to recordings/.drive/safety-batch.json for `just gpu-ui`, which shows it and makes those two files, and its kept takes to recordings/.drive/safety-batch.kept (for just isaac-safety-build). `twin=1` drives the second twin instead (docs/adr/0037 amendment 7: its joint port 6102, its takes in ~/data/takes/jetrover-isaac-twin1); its files are suffixed -1 (safety-batch-1.json, safety-batch-1.kept, PAUSE-1, STOP-1). `categories` may also name `mixed` (docs/adr/0038 decision 1: one script whose motion does not give the outcome away; its takes go to the scenario `mixed`), with `replays` more takes after each mixed take that send its commands again on its layout with one edit (decision 2; each counts as a take, and each is checked with its own exit code); while a mixed take and its replays record, the twin's sessions root holds `.keep-look` (made on joint-drive's `keep-look: on` line, removed on `keep-look: off` and after the run), so the replays keep the source take's look. `scene` is the twin's scene file under core/Scenes (default jetrover-bench; mixed batches run on jetrover-mixed): joint-drive refuses a run whose scene is not the twin's. Only Isaac's arm moves
+# The labmate's safety dataset from the JetRover twin, unattended (docs/adr/0036 amendment 1): `takes` rounds of the four categories (reach_no_obstacle, stop_before_collision, collide_and_recover, collide_with_obstacle) in a seeded order, each take one `joint-drive --script <category> --new-layout --take <category> --events <events>` (a fresh layout, the arm driven relative to where the objects are; each take of the three event categories draws `events` events, a count or a range, default 1-3, anywhere in it, docs/adr/0036 amendment 5), checked against its category by its physics contacts (teleop_lerobot safety-check: a take that fails is set aside to _discarded/<category>/ with its reason), then the kept takes written as one dataset in his label format at ~/data/lerobot/jetrover-isaac-safety/jetrover_<UTC>_<id>/ (front = the wrist camera; manual_safety_labels.json, meta/safety_labels.parquet, safety_events.jsonl). Needs `just isaac-jetrover-host jetrover-bench` running this commit (its bridge reports the contacts) and the LeRobot environment (just lerobot-setup). Stops after 5 takes in a row that could not be planned, or when recordings/.drive/STOP exists (after the take in progress); waits between takes while recordings/.drive/PAUSE exists. Writes its progress to recordings/.drive/safety-batch.json for `just gpu-ui`, which shows it and makes those two files, and its kept takes to recordings/.drive/safety-batch.kept (for just isaac-safety-build). `twin=1` drives the second twin instead (docs/adr/0037 amendment 7: its joint port 6102, its takes in ~/data/takes/jetrover-isaac-twin1); its files are suffixed -1 (safety-batch-1.json, safety-batch-1.kept, PAUSE-1, STOP-1). `categories` may also name `mixed` (docs/adr/0038 decision 1: one script whose motion does not give the outcome away; its takes go to the scenario `mixed`), with `replays` more takes after each mixed take that send its commands again on its layout with one edit (decision 2; each counts as a take, and each is checked with its own exit code); while a mixed take and its replays record, the twin's sessions root holds `.keep-look` (made on joint-drive's `keep-look: on` line, removed on `keep-look: off` and after the run), so the replays keep the source take's look. `scene` is the twin's scene file under core/Scenes (default jetrover-bench; mixed batches run on jetrover-mixed): joint-drive refuses a run whose scene is not the twin's. `views` and `views_count` are the view cameras the twin must record (docs/adr/0038 V, as `just isaac-jetrover-host` takes them): the batch refuses a twin whose renderer was started with others, and with the default none it only notes a twin that records some. `views=safety` is the setting for safety batches: one static 640x360 view at a seeded random viewpoint each take (robot/isaac/views/safety.json; a replay keeps its source's view), one on each twin rather than two on one; `safety-holdout` places it only where safety never does, for held-out test sessions. Only Isaac's arm moves
 [group('isaac')]
-isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3" twin="0" replays="0" scene="jetrover-bench":
+isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3" twin="0" replays="0" scene="jetrover-bench" views="none" views_count="-1":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
@@ -4095,6 +4116,9 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     case "{{replays}}" in [0-8]) ;; *) echo "error: replays is 0 to 8, not '{{replays}}'" >&2; exit 1 ;; esac
     case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene names a file under core/Scenes, like jetrover-bench" >&2; exit 1 ;; esac
     [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
+    case "{{views}}" in *[!A-Za-z0-9._-]*|"") echo "error: views is a spec name in robot/isaac/views without .json, or none" >&2; exit 1 ;; esac
+    [ "{{views}}" = none ] || [ -f "robot/isaac/views/{{views}}.json" ] || { echo "error: no robot/isaac/views/{{views}}.json" >&2; exit 1; }
+    case "{{views_count}}" in -1|[0-8]) ;; *) echo "error: views_count is -1 (the spec's) or 0-8" >&2; exit 1 ;; esac
     cats="{{categories}}"; [ "$cats" != all ] || cats=reach_no_obstacle,stop_before_collision,collide_and_recover,collide_with_obstacle
     for c in ${cats//,/ }; do
         case "$c" in reach_no_obstacle|stop_before_collision|collide_and_recover|collide_with_obstacle|mixed) ;; *) echo "error: categories is all, or a comma list of the four and mixed, not '$c'" >&2; exit 1 ;; esac
@@ -4110,7 +4134,7 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     commit=$(just _pushed-commit)
     # The checker and builder run from this commit, in a checkout of their own (the watcher's stays as it is); the twin must
     # run it too, or its bridge reports no contacts and every collide take fails its check. Its scenario list gets the four.
-    ssh -o ConnectTimeout=10 "$gpu" "COMMIT='$commit' TWIN='$twin' CATS='$cats' bash -s" <<'REMOTE'
+    ssh -o ConnectTimeout=10 "$gpu" "COMMIT='$commit' TWIN='$twin' CATS='$cats' VIEWS='{{views}}' VIEWS_COUNT='{{views_count}}' SCENE='{{scene}}' bash -s" <<'REMOTE'
     set -euo pipefail
     {{isaac_twin_sh}}
     twin_names "$TWIN"
@@ -4125,13 +4149,19 @@ isaac-safety-batch takes="25" seed="1" categories="all" build="true" events="1-3
     if ! git -C "$repo" merge-base --is-ancestor "$(git -C "$repo" log -1 --format=%H -- robot/isaac/teleop_isaac/contacts.py)" "$twin" 2>/dev/null; then
         echo "error: the twin runs $twin, which has no contact reporting: restart it from this commit (just isaac-stop; just isaac-jetrover-host jetrover-bench)" >&2; exit 1
     fi
+    # The view cameras the twin records (docs/adr/0038 V): what was asked for, or no batch.
+    want=$(views_effective "$VIEWS" "$VIEWS_COUNT"); got=$(twin_views "$TWIN")
+    if [ "$VIEWS" != none ] && [ "$got" != "$want" ]; then
+        echo "error: twin $TWIN records view cameras '${got:-unknown}', not the '$want' asked for: restart it with them (just isaac-stop $TWIN; just isaac-jetrover-host $SCENE auto $TWIN true $VIEWS $VIEWS_COUNT)" >&2; exit 1
+    fi
+    [ "$VIEWS" != none ] || [ "$got" = "none 0" ] || echo "[safety] note: twin $TWIN records view cameras '$got' (views none was asked for); its takes carry them"
     list=$ttakes/scenarios.txt
     for c in reach_no_obstacle stop_before_collision collide_and_recover collide_with_obstacle; do
         grep -q "^$c\b" "$list" 2>/dev/null || echo "$c | safety dataset (docs/adr/0036 amendment 1): joint-drive --script $c" >> "$list"
     done
     case ",$CATS," in *,mixed,*) grep -q "^mixed\b" "$list" 2>/dev/null || echo "mixed | safety data where the scene decides (docs/adr/0038): joint-drive --script mixed" >> "$list" ;; esac
     rm -f "$HOME/data/sessions/jetrover-isaac$tdata/.keep-look" # a run stopped mid-group may have left it
-    echo "[safety] twin $TWIN; checker at $(git log --oneline -1 | cut -c1-60); twin at ${twin:0:7}"
+    echo "[safety] twin $TWIN; checker at $(git log --oneline -1 | cut -c1-60); twin at ${twin:0:7}; view cameras: $got"
     REMOTE
     mkdir -p "$drive"
     # One build at a time: two batches building Teleop.Eval into one output folder at once break each other. -o: the build's
@@ -4474,20 +4504,29 @@ isaac-clearance-check dataset geometry="" limit="0":
         --dataset "$HOME/data/lerobot/jetrover-isaac-safety/$DATASET" --limit "$LIMIT" --traces 1
     REMOTE
 
-# Start the JetRover's Isaac twins on the GPU machine (docs/adr/0037 amendment 7): twins 0 to n-1 (n is 1 or 2), each `just isaac-jetrover-host <scene> auto <N> true`, one after the other (each waits for the last to listen: two Isaac start-ups at once only slow each other), in the background there, so a dropped ssh session leaves them running. A twin already running is left as it is. Stop them with just isaac-twins-down; just isaac-status shows them
+# Start the JetRover's Isaac twins on the GPU machine (docs/adr/0037 amendment 7): twins 0 to n-1 (n is 1 or 2), each `just isaac-jetrover-host <scene> auto <N> true <views> <views_count>`, one after the other (each waits for the last to listen: two Isaac start-ups at once only slow each other), in the background there, so a dropped ssh session leaves them running. `views` and `views_count` go to every twin started (docs/adr/0038 V; default none: no view cameras, as before): for safety batches `just isaac-twins-up 2 jetrover-mixed safety` gives each twin one static view (robot/isaac/views/safety.json), rather than two views on one twin, and `safety-holdout` the held-out viewpoints for test sessions. A twin already running is left as it is, with a warning when its view cameras are not the ones asked for. Stop them with just isaac-twins-down; just isaac-status shows them
 [group('isaac')]
-isaac-twins-up n="2" scene="jetrover-bench":
+isaac-twins-up n="2" scene="jetrover-bench" views="none" views_count="-1":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{n}}" in 1|2) ;; *) echo "error: n is 1 or 2" >&2; exit 1 ;; esac
+    case "{{views}}" in *[!A-Za-z0-9._-]*|"") echo "error: views is a spec name in robot/isaac/views without .json, or none" >&2; exit 1 ;; esac
+    [ "{{views}}" = none ] || [ -f "robot/isaac/views/{{views}}.json" ] || { echo "error: no robot/isaac/views/{{views}}.json" >&2; exit 1; }
+    case "{{views_count}}" in -1|[0-8]) ;; *) echo "error: views_count is -1 (the spec's) or 0-8" >&2; exit 1 ;; esac
     for t in $(seq 0 $(( {{n}} - 1 ))); do
-        running=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" "TWIN=$t bash -s" <<'REMOTE'
+        running=$(ssh -o ConnectTimeout=10 "{{gpu_host}}" "TWIN=$t VIEWS='{{views}}' VIEWS_COUNT='{{views_count}}' bash -s" <<'REMOTE'
     {{isaac_twin_sh}}
-    twin_pids "$TWIN" "Teleop[.]RobotHost[.]dll" dotnet | wc -l
+    n=$(twin_pids "$TWIN" "Teleop[.]RobotHost[.]dll" dotnet | wc -l)
+    echo "$n|$(twin_views "$TWIN")|$(views_effective "$VIEWS" "$VIEWS_COUNT")"
     REMOTE
         )
-        if [ "$running" != 0 ]; then echo "[twins] twin $t is already running: left as it is"; continue; fi
-        just isaac-jetrover-host "{{scene}}" auto "$t" true
+        IFS='|' read -r count got want <<< "$running"
+        if [ "$count" != 0 ]; then
+            echo "[twins] twin $t is already running: left as it is"
+            [ -z "$got" ] || [ "$got" = "$want" ] || echo "[twins] warning: twin $t's renderer records view cameras '$got', not the '$want' asked for: restart it to change them (just isaac-stop $t, then this again)" >&2
+            continue
+        fi
+        just isaac-jetrover-host "{{scene}}" auto "$t" true "{{views}}" "{{views_count}}"
     done
     just isaac-status 0
 
@@ -4496,23 +4535,26 @@ isaac-twins-up n="2" scene="jetrover-bench":
 isaac-twins-down:
     just isaac-stop all
 
-# Two twins, a dataset each (docs/adr/0037 amendment 7, docs/adr/0038 L): `just isaac-safety-batch <takes> <seed+1000*N> <categories> false <events> <N>` on each of twins 0 to n-1 at once (they must run: just isaac-twins-up), each batch's output prefixed [twin N] and kept in recordings/.drive/safety-batch-twins-<N>.log, then, if build=true, one dataset per twin from the takes it kept, jetrover_<UTC>_<id>_twin0 and _twin1 (just isaac-safety-build: the twins record at once on one clock, and one dataset of both would hold takes that overlap in time). Each twin's seeds are its own (take seeds seed*100000+n, so seed and seed+1000 never meet). Stop a twin's batch with gpu-ui, or recordings/.drive/STOP (twin 0) and STOP-1 (twin 1): it stops after the take in progress, and the datasets are still built from what both kept. Only Isaac's arms move
+# Two twins, a dataset each (docs/adr/0037 amendment 7, docs/adr/0038 L): `just isaac-safety-batch <takes> <seed+1000*N> <categories> false <events> <N> <replays> <scene> <views> <views_count>` on each of twins 0 to n-1 at once (they must run: just isaac-twins-up, with the same `views`: each batch refuses a twin whose renderer records other view cameras; default none, as before; `views=safety` is the setting for safety batches, one static view on each twin, after `just isaac-twins-up 2 <scene> safety`; `safety-holdout` records test sessions from viewpoints training never sees, docs/adr/0038 V), each batch's output prefixed [twin N] and kept in recordings/.drive/safety-batch-twins-<N>.log, then, if build=true, one dataset per twin from the takes it kept, jetrover_<UTC>_<id>_twin0 and _twin1 (just isaac-safety-build: the twins record at once on one clock, and one dataset of both would hold takes that overlap in time). Each twin's seeds are its own (take seeds seed*100000+n, so seed and seed+1000 never meet). Stop a twin's batch with gpu-ui, or recordings/.drive/STOP (twin 0) and STOP-1 (twin 1): it stops after the take in progress, and the datasets are still built from what both kept. Only Isaac's arms move
 [group('isaac')]
-isaac-safety-batch-twins takes="25" seed="1" n="2" categories="all" build="true" events="1-3" replays="0" scene="jetrover-bench":
+isaac-safety-batch-twins takes="25" seed="1" n="2" categories="all" build="true" events="1-3" replays="0" scene="jetrover-bench" views="none" views_count="-1":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{n}}" in 1|2) ;; *) echo "error: n is 1 or 2" >&2; exit 1 ;; esac
     case "{{takes}}{{seed}}" in *[!0-9]*|"") echo "error: takes and seed are numbers" >&2; exit 1 ;; esac
     [ "{{takes}}" -ge 1 ] || { echo "error: takes is at least 1 (rounds of the categories)" >&2; exit 1; }
     case "{{build}}" in true|false) ;; *) echo "error: build is true or false" >&2; exit 1 ;; esac
+    case "{{views}}" in *[!A-Za-z0-9._-]*|"") echo "error: views is a spec name in robot/isaac/views without .json, or none" >&2; exit 1 ;; esac
+    [ "{{views}}" = none ] || [ -f "robot/isaac/views/{{views}}.json" ] || { echo "error: no robot/isaac/views/{{views}}.json" >&2; exit 1; }
+    case "{{views_count}}" in -1|[0-8]) ;; *) echo "error: views_count is -1 (the spec's) or 0-8" >&2; exit 1 ;; esac
     mkdir -p recordings/.drive
     # This run's kept takes only: a batch that fails before it starts must not leave an earlier run's list to be built.
     rm -f recordings/.drive/safety-batch.kept recordings/.drive/safety-batch-[0-9].kept
     pids=() twins=()
     for t in $(seq 0 $(( {{n}} - 1 ))); do
         s=$(( {{seed}} + 1000 * t ))
-        echo "[twins] twin $t: {{takes}} round(s) of {{categories}}, seed $s"
-        ( set -o pipefail; just isaac-safety-batch "{{takes}}" "$s" "{{categories}}" false "{{events}}" "$t" "{{replays}}" "{{scene}}" < /dev/null 2>&1 \
+        echo "[twins] twin $t: {{takes}} round(s) of {{categories}}, seed $s$([ "{{views}}" = none ] || echo ", views {{views}} (count {{views_count}})")"
+        ( set -o pipefail; just isaac-safety-batch "{{takes}}" "$s" "{{categories}}" false "{{events}}" "$t" "{{replays}}" "{{scene}}" "{{views}}" "{{views_count}}" < /dev/null 2>&1 \
             | sed -u "s/^/[twin $t] /" | tee "recordings/.drive/safety-batch-twins-$t.log" ) &
         pids+=($!) twins+=($t)
         # A few seconds apart: the two setups' checkouts and builds take turns anyway (each under a lock).
@@ -4663,7 +4705,7 @@ robot-prune-takes apply="false" remote_host=default_jetrover_host remote_user="j
     if [ "{{apply}}" != true ] || [ "$n" = 0 ]; then [ "{{apply}}" != true ] && echo "dry run: nothing deleted. just robot-prune-takes true deletes them"; exit 0; fi
     ssh "$target" "cd ~/recordings/scenarios && for d in $(echo $deletable); do rm -rf -- \"\$d\" && echo \"  deleted \$d\"; done; echo \"--- free now: \$(df -h ~/recordings | tail -1 | awk '{print \$4}')\""
 
-# The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/repos/isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/logs/isaac/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/data/sessions/jetrover-isaac marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. `twin=1` starts a second twin beside the first (docs/adr/0037 amendment 7): every port 100 up (joint 6102, discovery 6105, camera feeds 6103/6108/6109), its sockets and logs suffixed -1, its sessions and takes in ~/data/sessions/jetrover-isaac-twin1 and ~/data/takes/jetrover-isaac-twin1 (the scenario list copied from twin 0's the first time); both run the one checkout, so a twin refuses another commit while the other runs. `detach=true` starts it in the background on the GPU machine (log ~/logs/isaac/jetrover-host[-N].log; a dropped ssh session no longer stops it), returns once RobotHost listens, and leaves it to `just isaac-stop`. Refuses while that twin, or the FR3 Duo's Isaac host, is running there: they share the ports. `views` (default none) adds view cameras at seeded random viewpoints, redrawn every take, for scene reconstruction (docs/adr/0038 "V, views"): a spec in robot/isaac/views without .json, e.g. `recon` (two 640x360 cameras) or `recon-720` (the second 1280x720); `views_count` overrides its count (-1 the spec's). Each costs the renderer about what a scene camera does, so run views on one twin. No real robot moves
+# The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/repos/isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/logs/isaac/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/data/sessions/jetrover-isaac marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. `twin=1` starts a second twin beside the first (docs/adr/0037 amendment 7): every port 100 up (joint 6102, discovery 6105, camera feeds 6103/6108/6109), its sockets and logs suffixed -1, its sessions and takes in ~/data/sessions/jetrover-isaac-twin1 and ~/data/takes/jetrover-isaac-twin1 (the scenario list copied from twin 0's the first time); both run the one checkout, so a twin refuses another commit while the other runs. `detach=true` starts it in the background on the GPU machine (log ~/logs/isaac/jetrover-host[-N].log; a dropped ssh session no longer stops it), returns once RobotHost listens, and leaves it to `just isaac-stop`. Refuses while that twin, or the FR3 Duo's Isaac host, is running there: they share the ports. `views` (default none) adds view cameras at seeded random viewpoints, redrawn every take, for scene reconstruction (docs/adr/0038 "V, views"): a spec in robot/isaac/views without .json, e.g. `recon` (two 640x360 cameras, a share of them moving) or `recon-720` (the second 1280x720) for reconstruction, `safety` (one static 640x360 camera, for safety batches) or `safety-holdout` (the same, only at viewpoints `safety` never takes, for held-out test sessions); `views_count` overrides its count (-1 the spec's). Each costs the renderer about what a scene camera does, so with two twins give each one view (`safety`, or `recon` with views_count 1), not two to one. No real robot moves
 [group('isaac')]
 isaac-jetrover-host scene="jetrover-bench" scene_seed="auto" twin="0" detach="false" views="none" views_count="-1":
     #!/usr/bin/env bash

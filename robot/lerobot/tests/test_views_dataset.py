@@ -162,10 +162,10 @@ def test_without_the_options_nothing_changes_and_with_them_only_the_view_files_a
     report = json.load(open(os.path.join(off, "meta", "teleop", "report.json")))
     assert "views" not in report["options"] and "depthMasks" not in report["options"]  # reported exactly as before
     assert [c[2:] for c in w_off.cameras[0]] == [(48, False)] * 2 and len(w_on.cameras[0]) == 4
-    # With them: the files a build without them writes, each the same but the three that list the views.
+    # With them: the files a build without them writes, each the same but the two that list the views (and
+    # visibility.parquet, which has no rows here: the take has no object poses; its view rows are tested below).
     diffs = safety.compare_datasets(on, off)
-    assert sorted(d.split(":")[0] for d in diffs) == [os.path.join("meta", "teleop", n) for n in
-                                                      ("report.json", "scenes.jsonl", "visibility.parquet")]
+    assert sorted(d.split(":")[0] for d in diffs) == [os.path.join("meta", "teleop", n) for n in ("report.json", "scenes.jsonl")]
     assert set(files(on)) - set(files(off)) == {os.path.join("meta", "teleop", "depth_masks.json")} | {
         os.path.join("meta", "teleop", "depth_masks", f"episode_{e:06d}.npz") for e in (0, 1)}
     a = [json.loads(x) for x in open(os.path.join(off, "meta", "teleop", "scenes.jsonl"))]

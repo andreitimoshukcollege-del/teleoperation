@@ -44,6 +44,7 @@ from . import materials as materials_module
 from . import camfeed, camwire, kinematics, wire
 from . import profile as profile_module
 from . import scene as scene_module
+from . import views as views_module
 
 APERTURE_MM = 20.955  # horizontal aperture; the focal length follows from the field of view
 # A mount link's frame looks along +x with z up; a USD camera looks along its -z with +y up.
@@ -897,7 +898,14 @@ def parse_args(argv=None) -> argparse.Namespace:
     # every object that exists then out of later collections. Each 5 s report says how often the collector ran and its longest.
     a.add_argument("--gc-freeze", action=argparse.BooleanOptionalAction, default=True,
                    help="freeze Python's heap once the scene is built, so later garbage collections never walk it (default on)")
+    # View cameras at random viewpoints, for scene reconstruction (docs/adr/0038 "V, views"): opt-in. Without --views (and
+    # without a views section in the scene file) the renderer records exactly as before.
+    a.add_argument("--views", default="", help="a views spec (robot/isaac/views/recon.json): extra cameras placed at seeded random "
+                                                "viewpoints at every change; default: the scene file's views section, if any")
+    a.add_argument("--views-count", type=int, default=-1, help="how many view cameras (-1: the spec's; 0: none)")
     args = a.parse_args(argv)
+    if not -1 <= args.views_count <= 8:
+        a.error("--views-count must be in [-1, 8]")
     if args.subframes < 1:
         a.error("--subframes must be at least 1")
     if args.samples_per_pixel < 1:
@@ -1353,6 +1361,30 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         specs.append({"id": c["id"], "width": w, "height": h, "quality": int(c.get("feedQuality", 80)), "record": records,
                       "recordQuality": int(c.get("recordQuality", 92)), "near": float(c.get("near", 0.05)),
                       "far": float(c.get("far", 10.0)), "mount": c.get("mount", ""), **intrinsics(w, h, hfov)})
+    # --- view cameras at random viewpoints (docs/adr/0038 "V, views"): only with --views or a views section --------------
+    view_spec = views_module.load(args.views, scene, args.views_count)
+    view_geo = views_module.geometry(view_spec, scene) if view_spec is not None else None
+    view_sensors = []  # (camera, sensor, its USD path), one per view camera, view0 first; no live feed
+    if view_spec is not None:
+        for k in range(view_spec.count):
+            slot = view_spec.slot(k)
+            hfov = sum(slot.hfov) / 2  # each change sets its own (apply_views)
+            attrs = {"focalLength": APERTURE_MM / (2 * math.tan(math.radians(hfov) / 2)), "horizontalAperture": APERTURE_MM,
+                     "verticalAperture": APERTURE_MM * slot.height / slot.width,
+                     "clippingRange": Gf.Vec2f(view_spec.near, view_spec.far)}
+            path = f"/World/Cameras/View{k}"
+            start = views_module.place(view_spec.target_lo, 0.0, 45.0, view_spec.distance[1])
+            cam = RtxCamera(path, positions=[list(start)], orientations=[list(look_at(start, view_spec.target_lo))],
+                            attributes=attrs)
+            annotators = ["rgb"]
+            if "mask" in view_spec.record:
+                annotators.append("semantic_segmentation")
+            if "depth" in view_spec.record:
+                annotators.append("distance_to_image_plane")
+            view_sensors.append((cam, CameraSensor(cam, resolution=(slot.height, slot.width), annotators=annotators), path))
+        print(f"[render] views: {view_spec.count} view camera(s) from {args.views or 'the scene file'} (sha256 "
+              f"{view_spec.sha256[:12]}), sizes {[(view_spec.slot(k).width, view_spec.slot(k).height) for k in range(view_spec.count)]}, "
+              f"recording {list(view_spec.record)}, moving share {view_spec.moving.share if view_spec.moving else 0}", flush=True)
     app_utils.play(commit=True)  # sensors deliver only while the timeline plays; with Physics at "none" nothing steps
 
     def read(sensor, name):
@@ -1437,6 +1469,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             camera_poses.append((*local_p, *local_q))
         else:
             camera_poses.append((*at[0], *at[1]))
+    if view_spec is not None:
+        sight.append(views_module.sight(view_spec))  # every place a view camera can be drawn, and how far it sees
     # What CM records: each camera's pose in force this change. Without an appearance section, the poses above; with one,
     # those moved by the change's jitter (apply_jitter).
     camera_used = list(camera_poses)
@@ -1490,6 +1524,40 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             if off_mm > 0.01 or off_deg > 0.001:
                 print(f"[render] warning: camera {c['id']} reads back {off_mm:.3f} mm and {off_deg:.4f} deg from the pose CM records "
                       f"(the start-up pose moved by the jitter)", flush=True)
+
+    views_now: List = []  # this change's views_module.View, one per view camera
+    view_change = {"frame": 0, "gains": {}, "luts": [None] * len(view_sensors)}
+
+    def apply_views(frame_now: int) -> None:
+        """This change's view cameras (docs/adr/0038 "V, views"): drawn from the seed and the change, each camera's field of view
+        set and its pose (a moving one's loop at its start; the loop then moves it every frame)."""
+        drawn = views_module.draw(view_spec, view_geo, backdrop_seed, backdrop["change"])
+        views_now[:] = drawn
+        view_change["frame"] = frame_now
+        view_change["gains"] = {}
+        view_change["luts"] = [None] * len(view_sensors)
+        for v, (cam, _, path) in zip(drawn, view_sensors):
+            UsdGeom.Camera(stage.GetPrimAtPath(path)).GetFocalLengthAttr().Set(
+                float(APERTURE_MM / (2 * math.tan(math.radians(v.hfov) / 2))))
+            vp, vq = views_module.pose_at_frame(v, 0, fps)
+            cam.set_world_poses(positions=[list(vp)], orientations=[list(vq)])
+        fell = [v.id for v in drawn if v.attempts == views_module.FALLBACK]
+        print(f"[render] views (change {backdrop['change']}): " + "; ".join(
+            f"{v.id} {v.mode} az {v.azimuth:.0f} el {v.elevation:.0f} d {v.distance:.2f} m hfov {v.hfov:.0f} ({v.attempts} draws)"
+            for v in drawn) + (f"; warning: no draw passed every rule for {fell}" if fell else ""), flush=True)
+        for v in drawn:
+            if v.broken:  # a fixed view the spec placed: warned, recorded in VW, never moved
+                print(f"[render] warning: fixed view {v.id} at {v.position} breaks the view rules {list(v.broken)}; kept where the "
+                      f"spec puts it", flush=True)
+
+    def view_records() -> List[tuple]:
+        """VS and every camera's VW for this change (trainer/contract/SESSION_FORMAT.md); none without views."""
+        if view_spec is None or not views_now:
+            return []
+        out = [("VS", *views_module.vs_fields(view_spec, backdrop_seed, backdrop["change"]))]
+        for v in views_now:
+            out.append(("VW", *views_module.vw_fields(view_spec, v, backdrop["change"], view_change["gains"].get(v.id, 1.0))))
+        return out
 
     def apply_lighting() -> None:
         """This change's light: every scene light's colour temperature, and the key light's direction, strength, size and
@@ -1636,9 +1704,13 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                 apply_lighting()  # before the room settles: the metering corrects the dome with this light on
             for record in appearance_records():
                 session_record(*record)
+        if view_spec is not None:
+            apply_views(frame_now)  # before the room settles: each view meters its own exposure where it now is
         if change_room():
             settle_room()
             session_record("EN", *en_fields())
+        for record in view_records():  # after the metering, which gives each view its gain
+            session_record(*record)
         if not quads:
             backdrop["images"] = {}
             backdrop["settle_until"] = frame_now + lag + 1
@@ -1667,6 +1739,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     # Each object's size factor (docs/adr/0034 amendment 6), from the bridge's SIZES: applied to the renderer's copy and recorded.
     world_sizes = {"revision": -1, "sizes": [[o.id, 1.0] for o in scene.objects]}
     streams = [f"{c['id']}.{st}" for c in specs for st in c["record"]]
+    if view_spec is not None:
+        streams += [f"view{k}.{st}" for k in range(view_spec.count) for st in view_spec.record]
     scene_sha = hashlib.sha256(open(args.scene, "rb").read()).hexdigest()
 
     def session_record(tag, *fields):
@@ -1676,7 +1750,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     def preamble():
         # With an appearance section, a session that opens while a change is pending or under way (the one before closed in
         # the same poll of the control file) waits for it: its CM, LT, CJ and OA must be the change its frames show.
-        if look is not None and not appearance_ready.wait(APPEARANCE_WAIT_S):
+        if (look is not None or view_spec is not None) and not appearance_ready.wait(APPEARANCE_WAIT_S):
             print(f"[render] warning: a session opened while a change had not finished after {APPEARANCE_WAIT_S:.0f} s; its "
                   f"preamble describes the change as it stands", flush=True)
         used_this_session.clear()
@@ -1702,6 +1776,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
         if clutter_all is not None:
             out.append(("CL", backdrop["change"], clutter_module.cl_items(clutter_now)))
         out.extend(appearance_records())  # none without an appearance section
+        out.extend(view_records())  # none without views
         if world_snapshot["objects"]:
             out.append(("OL", world_snapshot["sensed"], world_snapshot["revision"], world_snapshot["objects"]))
         out.append(("SZ", max(0, world_sizes["revision"]), world_sizes["sizes"]))
@@ -1733,6 +1808,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             doc = {"format": "teleop-environments-used", "version": 1, "license": environments_module.CC0,
                    "meanRadiance": env["meanRadiance"], "hdris": rooms, "textures": credits}
             out["environment.json"] = (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode("utf-8")
+        if view_spec is not None:
+            out["views.json"] = views_module.views_json(view_spec, os.path.basename(args.views) if args.views else "scene file")
         return out
 
     kept = {"in_a_row": 0}  # sessions in a row that kept the look before them (keep_look)
@@ -1749,7 +1826,7 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             print(f"[render] warning: {KEEP_LOOK_FILE} is still there after {KEEP_LOOK_MAX} sessions kept one look; changing anyway",
                   flush=True)
         kept["in_a_row"] = 0
-        if look is not None:
+        if look is not None or view_spec is not None:
             appearance_ready.clear()
         want_backdrop_change.append(directory)
 
@@ -1767,20 +1844,25 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     record_lock = threading.Lock()
     record_skipped = [0]
 
+    # With view cameras, a frame's streams are encoded on a pool of threads (Pillow and OpenCV let go of the GIL while they
+    # encode): one thread spends about 18 ms a frame on the scene's three cameras, and a 1280x720 view adds about 24 ms.
+    encode_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="encode") if view_spec is not None else None
+
+    def encode_one(item):
+        import cv2
+
+        name, (kind, a, quality) = item
+        if kind == "rgb":
+            buf = io.BytesIO()
+            Image.fromarray(a).save(buf, "JPEG", quality=quality)
+            return name, buf.getvalue()
+        ok, enc = cv2.imencode(".png", a)
+        return name, enc.tobytes() if ok else None
+
     def encode_and_record(frame_no, sensed, flags, arrays):
         try:
-            import cv2
-
-            blobs = {}
-            for name, (kind, a, quality) in arrays.items():
-                if kind == "rgb":
-                    buf = io.BytesIO()
-                    Image.fromarray(a).save(buf, "JPEG", quality=quality)
-                    blobs[name] = buf.getvalue()
-                else:
-                    ok, enc = cv2.imencode(".png", a)
-                    if ok:
-                        blobs[name] = enc.tobytes()
+            encoded = encode_pool.map(encode_one, list(arrays.items())) if encode_pool is not None else map(encode_one, arrays.items())
+            blobs = {name: blob for name, blob in encoded if blob is not None}
             if session is not None:
                 session.frame(frame_no, sensed, flags, blobs)
         finally:
@@ -1856,6 +1938,15 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             g = round(camera_gain(float(np.asarray(rgb[::8, ::8, :3], np.float32).mean()), target), 3)
             room["gains"][specs[i]["id"]] = g
             camera_luts[i] = exposure_lut(g)
+        for k, (_, sensor, _) in enumerate(view_sensors):  # each view camera meters its own, as the others (VW's gain)
+            if target is None:
+                break
+            rgb, _ = read(sensor, "rgb")
+            if rgb is None:
+                continue
+            g = round(camera_gain(float(np.asarray(rgb[::8, ::8, :3], np.float32).mean()), target), 3)
+            view_change["gains"][f"view{k}"] = g
+            view_change["luts"][k] = exposure_lut(g)
         h = room["hdri"] or {}
         print(f"[render] room {h.get('id')} (yaw {room['yaw']:.0f} deg, dome {room['base']:.0f} -> {room['intensity']:.0f} in "
               f"{len(steps)} metering step(s)): {'settled' if ok else 'NOT settled'} after {len(trace)} frames at brightness "
@@ -2014,6 +2105,10 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             cp, cq = compose(kinematics.link_pose(joints, posed_values, mount), local)
             cam.set_world_poses(positions=[list(cp)], orientations=[list(cq)])
         posed_values = state_values
+        for v, (cam, _, _) in zip(views_now, view_sensors):  # a moving view's loop, on frames since the change
+            if v.motion is not None:
+                vp, vq = views_module.pose_at_frame(v, frames - view_change["frame"], fps)
+                cam.set_world_poses(positions=[list(vp)], orientations=[list(vq)])
         for oid in [k for k, due in relabel_due.items() if due <= frames]:
             set_labels(stage, object_labels[oid], [f"object_{oid}"])
             del relabel_due[oid]
@@ -2082,6 +2177,25 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
                         arrays[f"{c['id']}.mask"] = ("png", stable, 0)
                         if checking:
                             checks.add(c["id"], stable, unlabelled_px(seg, id_to_labels, table), None if c["mount"] else depth_now)
+        if recording and view_sensors:
+            for k, (v, (_, sensor, _)) in enumerate(zip(views_now, view_sensors)):
+                rgb, _ = read(sensor, "rgb")
+                if rgb is None:
+                    session_record("FD", time.monotonic_ns(), frames, f"{v.id}-no-image")
+                    continue
+                rgb = np.ascontiguousarray(rgb[..., :3])
+                if view_change["luts"][k] is not None:
+                    rgb = apply_lut(rgb, view_change["luts"][k])
+                if "rgb" in view_spec.record:
+                    arrays[f"{v.id}.rgb"] = ("rgb", rgb, view_spec.record_quality)
+                if "depth" in view_spec.record:
+                    dep, _ = read(sensor, "distance_to_image_plane")
+                    if dep is not None:
+                        arrays[f"{v.id}.depth"] = ("png", depth_mm(dep), 0)
+                if "mask" in view_spec.record:
+                    seg, info = read(sensor, "semantic_segmentation")
+                    if seg is not None:
+                        arrays[f"{v.id}.mask"] = ("png", stable_mask(seg, (info or {}).get("idToLabels") or {}, table), 0)
         if checking and masks_recorded and checks.frame_done():
             mask_checked()
         if recording and arrays:
@@ -2089,6 +2203,13 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
             # docs/adr/0034 J5) still knows what each frame shows.
             if lag < len(frame_values):
                 session_record("VQ", frames, capture, [[name, round(v, 6)] for name, v in sorted(frame_values[-1 - lag].items())])
+            moving_views = [v for v in views_now if v.motion is not None]
+            if moving_views:
+                # The image read now shows the camera pose set lag - 1 frames ago: Isaac applies a camera's transform one frame
+                # sooner than the posed links (docs/adr/0032 amendment 3), as the wrist camera's posing relies on.
+                shown = max(0, frames - lag + 1 - view_change["frame"])
+                session_record("VP", frames, capture, views_module.vp_items(
+                    [(v.id, views_module.pose_at_frame(v, shown, fps)) for v in moving_views]))
             flags = "B" if frames <= backdrop["settle_until"] else ""
             with record_lock:
                 record_pending[0] += 1
@@ -2119,6 +2240,8 @@ def run(app, args, p, scene, cameras, fps, joints, motors, tap) -> int:
     for e in encoders:
         e.shutdown(wait=True)
     recorder.shutdown(wait=True)
+    if encode_pool is not None:
+        encode_pool.shutdown(wait=True)
     if session is not None:
         session.close()
         for d, n, dropped in session.closed_sessions:

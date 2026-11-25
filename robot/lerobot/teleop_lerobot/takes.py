@@ -390,6 +390,8 @@ def read_take(path: str, fps: int = 15) -> Take:
                 parts[cam] = (int(offset), int(length))
         if any(c.name not in parts for c in cameras):
             continue
+        # Only the CM cameras: a view camera's streams (docs/adr/0038 "V, views", no CM) are not the episode's.
+        parts = {c.name: parts[c.name] for c in cameras}
         j = joints(t)
         if j is None:
             continue

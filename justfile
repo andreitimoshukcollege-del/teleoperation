@@ -4663,9 +4663,9 @@ robot-prune-takes apply="false" remote_host=default_jetrover_host remote_user="j
     if [ "{{apply}}" != true ] || [ "$n" = 0 ]; then [ "{{apply}}" != true ] && echo "dry run: nothing deleted. just robot-prune-takes true deletes them"; exit 0; fi
     ssh "$target" "cd ~/recordings/scenarios && for d in $(echo $deletable); do rm -rf -- \"\$d\" && echo \"  deleted \$d\"; done; echo \"--- free now: \$(df -h ~/recordings | tail -1 | awk '{print \$4}')\""
 
-# The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/repos/isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/logs/isaac/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/data/sessions/jetrover-isaac marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. `twin=1` starts a second twin beside the first (docs/adr/0037 amendment 7): every port 100 up (joint 6102, discovery 6105, camera feeds 6103/6108/6109), its sockets and logs suffixed -1, its sessions and takes in ~/data/sessions/jetrover-isaac-twin1 and ~/data/takes/jetrover-isaac-twin1 (the scenario list copied from twin 0's the first time); both run the one checkout, so a twin refuses another commit while the other runs. `detach=true` starts it in the background on the GPU machine (log ~/logs/isaac/jetrover-host[-N].log; a dropped ssh session no longer stops it), returns once RobotHost listens, and leaves it to `just isaac-stop`. Refuses while that twin, or the FR3 Duo's Isaac host, is running there: they share the ports. No real robot moves
+# The JetRover's arm in Isaac Sim on the GPU machine, behind the JetRover's own RobotHost (docs/adr/0034 J2): checks out this commit in ~/repos/isaac (it must be on GitHub), builds RobotHost, starts teleop_isaac.jetrover_bridge on a relay socket (log ~/logs/isaac/jetrover-bridge.log) and then RobotHost exactly as the Jetson runs it, with --relay-socket pointing at Isaac instead of the ROS relay: joint port 6002, discovery 6005, the JetRover profile, sessions recorded into ~/data/sessions/jetrover-isaac marked source isaac. Point the headset's JetRover app at it with `just push-galaxy-config <GPU machine's address>`. Enter stops both, as does `just isaac-stop`. `twin=1` starts a second twin beside the first (docs/adr/0037 amendment 7): every port 100 up (joint 6102, discovery 6105, camera feeds 6103/6108/6109), its sockets and logs suffixed -1, its sessions and takes in ~/data/sessions/jetrover-isaac-twin1 and ~/data/takes/jetrover-isaac-twin1 (the scenario list copied from twin 0's the first time); both run the one checkout, so a twin refuses another commit while the other runs. `detach=true` starts it in the background on the GPU machine (log ~/logs/isaac/jetrover-host[-N].log; a dropped ssh session no longer stops it), returns once RobotHost listens, and leaves it to `just isaac-stop`. Refuses while that twin, or the FR3 Duo's Isaac host, is running there: they share the ports. `views` (default none) adds view cameras at seeded random viewpoints, redrawn every take, for scene reconstruction (docs/adr/0038 "V, views"): a spec in robot/isaac/views without .json, e.g. `recon` (two 640x360 cameras) or `recon-720` (the second 1280x720); `views_count` overrides its count (-1 the spec's). Each costs the renderer about what a scene camera does, so run views on one twin. No real robot moves
 [group('isaac')]
-isaac-jetrover-host scene="jetrover-bench" scene_seed="auto" twin="0" detach="false":
+isaac-jetrover-host scene="jetrover-bench" scene_seed="auto" twin="0" detach="false" views="none" views_count="-1":
     #!/usr/bin/env bash
     set -euo pipefail
     case "{{scene}}" in *[!A-Za-z0-9._-]*|"") echo "error: scene is a file name in core/Scenes without .json, or none" >&2; exit 1 ;; esac
@@ -4673,6 +4673,9 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto" twin="0" detach="fa
     case "{{twin}}" in 0|1) ;; *) echo "error: twin is 0 or 1 (docs/adr/0037 amendment 7: two twins were measured on the machine)" >&2; exit 1 ;; esac
     case "{{detach}}" in true|false) ;; *) echo "error: detach is true or false" >&2; exit 1 ;; esac
     [ "{{scene}}" = none ] || [ -f "core/Scenes/{{scene}}.json" ] || { echo "error: no core/Scenes/{{scene}}.json" >&2; exit 1; }
+    case "{{views}}" in *[!A-Za-z0-9._-]*|"") echo "error: views is a spec name in robot/isaac/views without .json, or none" >&2; exit 1 ;; esac
+    [ "{{views}}" = none ] || [ -f "robot/isaac/views/{{views}}.json" ] || { echo "error: no robot/isaac/views/{{views}}.json" >&2; exit 1; }
+    case "{{views_count}}" in -1|[0-8]) ;; *) echo "error: views_count is -1 (the spec's) or 0-8" >&2; exit 1 ;; esac
     commit=$(just _pushed-commit)
     remote=$(cat <<'REMOTE'
     set -euo pipefail
@@ -4746,8 +4749,9 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto" twin="0" detach="fa
         # The cameras, backdrops and recorded frames (docs/adr/0034 J5): the FR3's renderer, given the JetRover's URDF and motors.
         rlog=$trender_log
         feeds=(); [ "$toff" = 0 ] || feeds=(--feed-port-offset "$toff")
+        views=(); [ "$VIEWS" = none ] || { views=(--views "views/$VIEWS.json" --views-count "$VIEWS_COUNT"); echo "[isaac-jetrover] view cameras: $VIEWS (count $VIEWS_COUNT)"; }
         (cd robot/isaac && exec $(pin 8-23) "$HOME/isaacsim/venv/bin/python" -m teleop_isaac.renderer --sim ../jetrover/urdf/jetrover.sim.json \
-            --scene "../../core/Scenes/$SCENE.json" --tap "$tap" --record-control "$rec/.active" "${feeds[@]}") > "$rlog" 2>&1 &
+            --scene "../../core/Scenes/$SCENE.json" --tap "$tap" --record-control "$rec/.active" "${feeds[@]}" "${views[@]}") > "$rlog" 2>&1 &
         renderer=$!
         echo "[isaac-jetrover] renderer pid $renderer (log $rlog); waiting for its feeds"
         # Up to 7 min: beside a running twin, the second renderer took 3 min 15 s to stream (2026-11-21, docs/adr/0037 amendment 7).
@@ -4774,7 +4778,7 @@ isaac-jetrover-host scene="jetrover-bench" scene_seed="auto" twin="0" detach="fa
         --rest-pose-deg {{jetrover_rest_pose_deg}} $park "${host_scene[@]}" "${writer[@]}"
     REMOTE
     )
-    vars="TWIN='{{twin}}' COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}'"
+    vars="TWIN='{{twin}}' COMMIT='$commit' SCENE='{{scene}}' SCENE_SEED='{{scene_seed}}' VIEWS='{{views}}' VIEWS_COUNT='{{views_count}}'"
     if [ "{{detach}}" != true ]; then
         ssh -o ConnectTimeout=10 "{{gpu_host}}" "$vars bash -c $(printf '%q' "$remote")"
         exit

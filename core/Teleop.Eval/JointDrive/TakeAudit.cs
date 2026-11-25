@@ -66,6 +66,8 @@ namespace Teleop.Eval.JointDrive
             // matched onset by onset to physics: the same object within MatchSeconds.
             var byModel = new ContactTally();
             var phys = new ContactTally();
+            var byModelEvents = new ContactTally();
+            var physEvents = new ContactTally();
             var match = new int[2, 3]; // [other, accident] x [both, only the model, only physics]
             int physicsMerged = 0;
             foreach (string take in takes)
@@ -79,6 +81,7 @@ namespace Teleop.Eval.JointDrive
                 var scale = new Dictionary<byte, double>();
                 var physics = new List<(double T, int Object, int[] Links)>();
                 var touching = new Dictionary<int, int[]>();
+                var ends = new List<(double T, int Object)>();
                 string group = "";
                 foreach (string line in File.ReadLines(log))
                 {
@@ -138,6 +141,8 @@ namespace Teleop.Eval.JointDrive
 
                             foreach (KeyValuePair<int, List<int>> kv in now)
                                 if (!touching.ContainsKey(kv.Key)) physics.Add((t, kv.Key, kv.Value.ToArray()));
+                            foreach (int gone in touching.Keys)
+                                if (!now.ContainsKey(gone)) ends.Add((t, gone));
                             touching = now.ToDictionary(k => k.Key, k => k.Value.ToArray());
                             break;
                         }
@@ -258,6 +263,7 @@ namespace Teleop.Eval.JointDrive
                 var reach = atStart.Where(o => !o.Scenery && new System.Numerics.Vector2(o.Center.X, o.Center.Y).Length() - MathF.Max(o.HalfExtents.X, o.HalfExtents.Y) < 0.45f).ToList();
                 var modelOnsets = new List<(double T, int Object, bool Accident)>();
                 var inside = new bool[reach.Count];
+                var modelEvents = new MixedDryRun.ContactEvents();
                 foreach (Sample s in follow)
                 {
                     arm.At(s.Pose, s.Gripper);
@@ -268,10 +274,13 @@ namespace Teleop.Eval.JointDrive
                         {
                             bool acc = moves.Any(m => IsAccident(m.Kind) && s.T >= m.Start && s.T <= m.End + lag);
                             modelOnsets.Add((s.T, reach[i].Id, acc));
-                            byModel.Add(acc, arm.Tool.Z, link == ArmLink.Gripper ? "gripper" : link == ArmLink.Wrist ? "wrist" : link.ToString().ToLowerInvariant());
+                            string ln = link == ArmLink.Gripper ? "gripper" : link == ArmLink.Wrist ? "wrist" : link.ToString().ToLowerInvariant();
+                            byModel.Add(acc, arm.Tool.Z, ln);
+                            if (modelEvents.Begin(reach[i].Id, s.T)) byModelEvents.Add(acc, arm.Tool.Z, ln);
                             if (rows) Console.WriteLine(FormattableString.Invariant($"    model contact {reach[i].Id} at {s.T - t0:0.00} s by {link.ToString().ToLowerInvariant()}{(acc ? ", in an accident" : "")}; tool z {arm.Tool.Z * 100:0.0} cm"));
                         }
 
+                        if (!now && inside[i]) modelEvents.Stop(reach[i].Id, s.T);
                         inside[i] = now;
                     }
                 }
@@ -290,6 +299,25 @@ namespace Teleop.Eval.JointDrive
                     Sample near = meas.Count == 0 ? cmd[0] : meas.OrderBy(x => Math.Abs(x.T - t)).First();
                     arm.At(near.Pose, near.Gripper);
                     phys.Add(acc, arm.Tool.Z, links.Length > 0 && links[0] >= 0 && links[0] < LinkNames.Length ? LinkNames[links[0]] : "link");
+                }
+
+                // Physics as contact events: a re-touch of an object within MergeSeconds of its last stretch's end is the same contact.
+                var physicsEvents = new MixedDryRun.ContactEvents();
+                var transitions = physics.Where(c => c.Object != 0).Select(c => (c.T, c.Object, On: true, c.Links)).Concat(ends.Where(e => e.Object != 0).Select(e => (e.T, e.Object, On: false, Links: Array.Empty<int>())))
+                    .OrderBy(x => x.T).ThenBy(x => x.On ? 1 : 0).ToList();
+                foreach ((double t, int o, bool on, int[] links) in transitions)
+                {
+                    if (!on)
+                    {
+                        physicsEvents.Stop(o, t);
+                        continue;
+                    }
+
+                    if (!physicsEvents.Begin(o, t)) continue;
+                    bool acc = moves.Any(m => IsAccident(m.Kind) && t >= m.Start && t <= m.End + lag);
+                    Sample near = meas.Count == 0 ? cmd[0] : meas.OrderBy(x => Math.Abs(x.T - t)).First();
+                    arm.At(near.Pose, near.Gripper);
+                    physEvents.Add(acc, arm.Tool.Z, links.Length > 0 && links[0] >= 0 && links[0] < LinkNames.Length ? LinkNames[links[0]] : "link");
                 }
 
                 foreach ((double t, int o, bool acc) in modelOnsets)
@@ -359,6 +387,8 @@ namespace Teleop.Eval.JointDrive
             Console.WriteLine("  touching links: " + string.Join(", ", onsetLink.OrderByDescending(k => k.Value).Select(k => k.Key + " " + k.Value)));
             Console.WriteLine(FormattableString.Invariant($"  the dry run's contacts on the recorded commands (the follower, the objects as each take began): {byModel.Describe()}"));
             Console.WriteLine(FormattableString.Invariant($"  physics, counted the same way: {phys.Describe()}; re-touches of the same object within {MergeSeconds:0.0} s of its last onset {physicsMerged}"));
+            Console.WriteLine(FormattableString.Invariant($"  as contact events (a re-touch within {MixedDryRun.ContactEvents.MergeSeconds:0.0} s of the object's last release is the same contact): the model {byModelEvents.Describe()}"));
+            Console.WriteLine(FormattableString.Invariant($"    physics {physEvents.Describe()}"));
             Console.WriteLine(FormattableString.Invariant(
                 $"  onsets matched (the same object within {MatchSeconds:0.0} s): outside accidents both {match[0, 0]}, only the model {match[0, 1]}, only physics {match[0, 2]}; in an accident's span both {match[1, 0]}, only the model {match[1, 1]}, only physics {match[1, 2]}"));
             return 0;

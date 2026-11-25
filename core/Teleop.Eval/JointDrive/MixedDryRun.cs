@@ -680,6 +680,24 @@ namespace Teleop.Eval.JointDrive
             }
         }
 
+        /// <summary>
+        /// Contact events (docs/adr/0038 "M, motion", round 7 on the twin): a touch of an object that begins within <see cref="MergeSeconds"/>
+        /// of the end of its last touch of that object continues that contact. Physics breaks a sustained push into several touches as the
+        /// object gives and the arm presses on, and the model, whose arm passes through an object, counts one going in and another coming
+        /// back; neither is a new contact.
+        /// </summary>
+        internal sealed class ContactEvents
+        {
+            public const double MergeSeconds = 0.5;
+            private readonly Dictionary<int, double> _end = new Dictionary<int, double>();
+
+            /// <summary>Object <paramref name="id"/> touched from <paramref name="t"/>: true when that begins a new contact.</summary>
+            public bool Begin(int id, double t) => !_end.TryGetValue(id, out double e) || t - e > MergeSeconds;
+
+            /// <summary>Object <paramref name="id"/> no longer touched from <paramref name="t"/>.</summary>
+            public void Stop(int id, double t) => _end[id] = t;
+        }
+
         /// <summary>How long after an accident's recorded end a contact is still its own: the arm's lag behind the command (docs/adr/0038 "M, motion").</summary>
         public const double LagSeconds = 0.2;
 

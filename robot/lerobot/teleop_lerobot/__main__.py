@@ -18,6 +18,9 @@
   dataset that overlap in time are refused (exit 3, ``[refused]`` lines naming them), and nothing is written;
 - ``safety-compare REFERENCE REBUILT``: whether a safety dataset rebuilt from a reference's first takes holds the same
   files (amendment 6; no LeRobot needed);
+- ``safety-views-check DATASET``: whether a dataset built ``--depth-masks`` agrees with its cameras' recorded poses: the
+  table's points through each base-frame camera (the room cameras, the views) land on the table's id at the depth on its
+  plane, and the arm's link boxes on its ids (``depth_masks.projection_check``; no LeRobot needed);
 - ``safety-options DATASET``: the ``safety-build`` options that rebuild a safety dataset as it was built, from its
   ``report.json`` (``just isaac-safety-build-check``; no LeRobot needed);
 - ``safety-report DATASET...``: what a set of safety datasets holds (a split build's parts, or a whole train, val and test
@@ -136,6 +139,10 @@ def main(argv=None) -> int:
     s = sub.add_parser("safety-compare")
     s.add_argument("reference", help="a safety dataset")
     s.add_argument("rebuilt", help="one written from the first takes of the reference's meta/teleop/takes.jsonl")
+    s = sub.add_parser("safety-views-check")
+    s.add_argument("dataset", help="a safety dataset built --depth-masks (and --views)")
+    s.add_argument("--geometry-dir", default=GEOMETRY_DIR, help="the robot's kinematics, for the arm's points ('' for none)")
+    s.add_argument("--frames", type=int, default=12, help="frames checked an episode")
     s = sub.add_parser("safety-options")
     s.add_argument("dataset", help="a safety dataset")
     a = p.parse_args(argv)
@@ -145,6 +152,17 @@ def main(argv=None) -> int:
 
         print(" ".join(safety.rebuild_options(os.path.expanduser(a.dataset))))
         return 0
+
+    if a.command == "safety-views-check":
+        from .depth_masks import projection_check
+
+        result = projection_check(os.path.expanduser(a.dataset), a.geometry_dir or None, a.frames)
+        for name, c in result["cameras"].items():
+            print(f"[views-check] {name}: table id {c['tableIdShare']} of {c.get('table.onPlane', 0)} px on its plane, seen "
+                  f"through {c['seeThroughShare']}; arm ids at {c['armHitShare']} of {c.get('arm.hits', 0) + c.get('arm.misses', 0)} "
+                  f"unoccluded box centres ({c.get('arm.occluded', 0)} occluded)")
+        print("RESULT " + json.dumps(result, sort_keys=True))
+        return 1 if result["problems"] or not result["cameras"] else 0
 
     if a.command == "safety-compare":
         from . import safety

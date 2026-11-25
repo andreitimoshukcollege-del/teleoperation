@@ -96,6 +96,11 @@ twins, the robot and the user's own changes. Every agent in `.claude/agents/` re
   - `just isaac-safety-build <twins> [name] [out]`: one dataset per twin from the batches' `.kept` lists. Two twins record
     at once on one clock, so one dataset of both would hold takes that overlap in time, and the builder refuses that
     (docs/adr/0038 L). `just isaac-safety-rebuild <dataset>` rebuilds one built that way before 2026-11-24.
+  - Quote `out` as `'~/scratch/...'` from a local shell: unquoted, `~` becomes the laptop's home.
+  - Extra `safety-build` options (views, depth and masks: `--views --depth-masks 160x90`) go in the last argument,
+    `build_args`, of `isaac-safety-build`, `isaac-safety-batch` and `isaac-safety-batch-twins`, or in `SAFETY_BUILD_ARGS`.
+    Both are added after the recipe's own options, never in place of them (before 2026-11-25 `isaac-safety-build` dropped
+    `SAFETY_BUILD_ARGS`).
   - View cameras (docs/adr/0038 V): `isaac-twins-up`, `isaac-jetrover-host` and both batch recipes take `views` and
     `views_count` last (default none). Use `safety` for safety batches (one static view on each twin), `safety-holdout` for
     held-out test sessions and `recon` for reconstruction. A batch refuses a twin that was started with other views.

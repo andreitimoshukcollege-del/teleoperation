@@ -61,6 +61,13 @@ namespace Teleop.Eval.JointDrive
             var followErr = new List<double>();
             var sourceOnsets = new int[2];
             var causes = new[] { new HashSet<Move?>(), new HashSet<Move?>() };
+            // The dry run's contacts on the recorded commands (docs/adr/0038 "M, motion", round 7 on the twin): the follower of the take's own
+            // commands against the objects where they stood as it began, counted as the dry run counts them (MixedDryRun.LagAwareContacts), and
+            // matched onset by onset to physics: the same object within MatchSeconds.
+            var model = new ContactTally();
+            var phys = new ContactTally();
+            var match = new int[2, 3]; // [other, accident] x [both, only the model, only physics]
+            int physicsMerged = 0;
             foreach (string take in takes)
             {
                 string log = Path.Combine(take, "robothost.jlog");
@@ -246,6 +253,50 @@ namespace Teleop.Eval.JointDrive
                             $"    {a.Kind,-9} {a.Start - t0,5:0.00}-{a.End - t0,5:0.00} s{(a.Object != 0 ? $" on aim {a.Object}" : "")}: closest by the model, commanded {Mm(gc)}, measured {Mm(gm)}; in the command {(double.IsNaN(touchAt) ? 0 : lastTouch - touchAt):0.00} s; clamped {clamped}; physics {(hit ? "contact" : "none")}"));
                 }
 
+                // The dry run's view of this take: the follower's onsets on the objects as they stood when it began.
+                List<SafetyObject> atStart = ObjectsAt(t0);
+                var reach = atStart.Where(o => !o.Scenery && new System.Numerics.Vector2(o.Center.X, o.Center.Y).Length() - MathF.Max(o.HalfExtents.X, o.HalfExtents.Y) < 0.45f).ToList();
+                var modelOnsets = new List<(double T, int Object, bool Accident)>();
+                var inside = new bool[reach.Count];
+                foreach (Sample s in follow)
+                {
+                    arm.At(s.Pose, s.Gripper);
+                    for (int i = 0; i < reach.Count; i++)
+                    {
+                        bool now = arm.Touching(reach[i], out ArmLink link, out System.Numerics.Vector3 point);
+                        if (now && !inside[i])
+                        {
+                            bool acc = moves.Any(m => IsAccident(m.Kind) && s.T >= m.Start && s.T <= m.End + lag);
+                            modelOnsets.Add((s.T, reach[i].Id, acc));
+                            model.Add(acc, arm.Tool.Z, link == ArmLink.Gripper ? "gripper" : link == ArmLink.Wrist ? "wrist" : link.ToString().ToLowerInvariant());
+                            if (rows) Console.WriteLine(FormattableString.Invariant($"    model contact {reach[i].Id} at {s.T - t0:0.00} s by {link.ToString().ToLowerInvariant()}{(acc ? ", in an accident" : "")}; tool z {arm.Tool.Z * 100:0.0} cm"));
+                        }
+
+                        inside[i] = now;
+                    }
+                }
+
+                var physicsOnsets = new List<(double T, int Object, bool Accident)>();
+                double lastEnd = double.NegativeInfinity;
+                int lastObject = -1;
+                foreach ((double t, int o, int[] links) in physics)
+                {
+                    if (o == 0) continue;
+                    bool acc = moves.Any(m => IsAccident(m.Kind) && t >= m.Start && t <= m.End + lag);
+                    physicsOnsets.Add((t, o, acc));
+                    if (o == lastObject && t - lastEnd < MergeSeconds) physicsMerged++;
+                    lastObject = o;
+                    lastEnd = t;
+                    Sample near = meas.Count == 0 ? cmd[0] : meas.OrderBy(x => Math.Abs(x.T - t)).First();
+                    arm.At(near.Pose, near.Gripper);
+                    phys.Add(acc, arm.Tool.Z, links.Length > 0 && links[0] >= 0 && links[0] < LinkNames.Length ? LinkNames[links[0]] : "link");
+                }
+
+                foreach ((double t, int o, bool acc) in modelOnsets)
+                    match[acc ? 1 : 0, physicsOnsets.Any(x => x.Object == o && Math.Abs(x.T - t) <= MatchSeconds) ? 0 : 1]++;
+                foreach ((double t, int o, bool acc) in physicsOnsets)
+                    if (!modelOnsets.Any(x => x.Object == o && Math.Abs(x.T - t) <= MatchSeconds)) match[acc ? 1 : 0, 2]++;
+
                 foreach ((double t, int o, int[] links) in physics)
                 {
                     if (o == 0) continue;
@@ -306,7 +357,42 @@ namespace Teleop.Eval.JointDrive
             Console.WriteLine("  their tool point (measured), cm from the base frame: 5 cm bins from -20: " + MixedDryRun.Histogram(onsetTool.Select(z => z * 100.0), -20, 5, 8) +
                               "; p10/p50/p90 " + MixedDryRun.Percentiles(onsetTool.Select(z => z * 100.0).ToList(), "0.0"));
             Console.WriteLine("  touching links: " + string.Join(", ", onsetLink.OrderByDescending(k => k.Value).Select(k => k.Key + " " + k.Value)));
+            Console.WriteLine(FormattableString.Invariant($"  the dry run's contacts on the recorded commands (the follower, the objects as each take began): {model.Describe()}"));
+            Console.WriteLine(FormattableString.Invariant($"  physics, counted the same way: {phys.Describe()}; re-touches of the same object within {MergeSeconds:0.0} s of its last onset {physicsMerged}"));
+            Console.WriteLine(FormattableString.Invariant(
+                $"  onsets matched (the same object within {MatchSeconds:0.0} s): outside accidents both {match[0, 0]}, only the model {match[0, 1]}, only physics {match[0, 2]}; in an accident's span both {match[1, 0]}, only the model {match[1, 1]}, only physics {match[1, 2]}"));
             return 0;
+        }
+
+        /// <summary>How near in time a model onset and a physics onset of the same object count as one contact, s.</summary>
+        internal const double MatchSeconds = 0.4;
+
+        /// <summary>A physics onset of the object last touched this soon after that one's onset counts as a re-touch, s.</summary>
+        internal const double MergeSeconds = 0.5;
+
+        /// <summary>Contact onsets: how many, how many in an accident's span (and the lag after), their tool point's height, the touching link.</summary>
+        private sealed class ContactTally
+        {
+            private readonly List<double> _tool = new List<double>();
+            private readonly Dictionary<string, int> _links = new Dictionary<string, int>();
+            private int _accidents;
+
+            public void Add(bool accident, double toolZ, string link)
+            {
+                if (accident) _accidents++;
+                _tool.Add(toolZ);
+                Count(_links, link);
+            }
+
+            public string Describe()
+            {
+                int n = _tool.Count;
+                var bins = new int[64];
+                foreach (double z in _tool) bins[Math.Clamp((int)Math.Floor((z * 100.0 + 20.0) / 5.0), 0, 63)]++;
+                return FormattableString.Invariant($"{n} onsets, in an accident's span {_accidents} ({100.0 * _accidents / Math.Max(1, n):0}%); tool point 5 cm bins from -20: ") +
+                       MixedDryRun.Histogram(_tool.Select(z => z * 100.0), -20, 5, 8) + FormattableString.Invariant($" (largest band {(n == 0 ? 0 : 100.0 * bins.Max() / n):0}%); links ") +
+                       string.Join(", ", _links.OrderByDescending(k => k.Value).ThenBy(k => k.Key, StringComparer.Ordinal).Select(k => k.Key + " " + k.Value));
+            }
         }
 
         /// <summary>The follower: the command <see cref="FollowDelay"/> late, each joint at most <see cref="FollowSpeed"/>, and lagging it with time constant <see cref="FollowTau"/>.</summary>
